@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    package="com.deepseek.harness"
-    android:versionCode="48"
-    android:versionName="1.16.1">
+    package="com.deepseek.harness.plus"
+    android:versionCode="49"
+    android:versionName="1.16.1-plus">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="28" />
 
@@ -41,7 +41,7 @@
              fullUser：系统「自动旋转」开着 → 跟随重力感应（含反向横竖屏）；
              关着（锁定方向）→ 跟随用户锁定。 -->
         <activity
-            android:name=".MainActivity"
+            android:name="com.deepseek.harness.MainActivity"
             android:exported="true"
             android:screenOrientation="fullUser"
             android:configChanges="orientation|screenSize|keyboardHidden"
@@ -58,30 +58,30 @@
 
         <!-- 前台保活服务：引擎运行期间常驻通知栏，挂后台不被杀 -->
         <service
-            android:name=".EngineService"
+            android:name="com.deepseek.harness.EngineService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
         <!-- 定时任务闹钟接收器（⑥）：AI 设置定时后由系统闹钟唤醒，即使 App 被杀也能触发 -->
         <receiver
-            android:name=".AlarmReceiver"
+            android:name="com.deepseek.harness.AlarmReceiver"
             android:exported="false" />
 
         <!-- 小鲸鱼悬浮窗（含引擎状态显示） -->
         <service
-            android:name=".OverlayService"
+            android:name="com.deepseek.harness.OverlayService"
             android:exported="false" />
 
         <!-- 虚拟屏接入桥：启动 Operit server + HTTP->binder 转发（插件 API） -->
         <service
-            android:name=".VsreenBridgeService"
+            android:name="com.deepseek.harness.VsreenBridgeService"
             android:exported="false" />
 
         <!-- v1.7 无障碍服务：AI 读屏 + 模拟操作 + 无障碍截图（用户需在系统设置开启） -->
         <service
-            android:name=".AccessibilityService"
+            android:name="com.deepseek.harness.AccessibilityService"
             android:exported="false"
-            android:label="DeepSeek Harness 屏幕助手"
+            android:label="DSH Plus 屏幕助手"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
@@ -93,7 +93,7 @@
 
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
-            android:authorities="com.deepseek.harness.shizuku"
+            android:authorities="com.deepseek.harness.plus.shizuku"
             android:multiprocess="false"
             android:enabled="true"
             android:exported="true"
@@ -102,7 +102,7 @@
         <!-- v1.13：「分享日志」以**文件**形式发出（targetSdk 28 不允许直传 file:// URI，
              本项目无 androidx，故自实现最小只读 ContentProvider，只暴露 cache/share 下的文件） -->
         <provider
-            android:name=".LogShareProvider"
+            android:name="com.deepseek.harness.LogShareProvider"
             android:authorities="com.deepseek.harness.logshare"
             android:exported="false"
             android:grantUriPermissions="true" />
