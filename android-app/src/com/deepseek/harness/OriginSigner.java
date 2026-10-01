@@ -69,7 +69,7 @@ public final class OriginSigner {
         KeyStore ks = KeyStore.getInstance(KEYSTORE);
         ks.load(null);
         if (!ks.containsAlias(KEY_ALIAS)) {
-            android.security.keystore.KeyGenerator kg = android.security.keystore.KeyGenerator.getInstance(MAC_ALGO, KEYSTORE);
+            javax.crypto.KeyGenerator kg = javax.crypto.KeyGenerator.getInstance(MAC_ALGO, KEYSTORE);
             KeyGenParameterSpec spec = new KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_SIGN | KeyProperties.PURPOSE_VERIFY)
                     .setKeySize(256)
                     .build();
