@@ -18,6 +18,8 @@ const pkgName = pkg.name;
 if (!pkgName) { console.error("в package.json плагина нет name"); process.exit(1); }
 
 // Ищем все профили в распакованном payload, не полагаясь на конкретный путь: он может меняться.
+// Профиль определяем по наличию profiles/<имя>/package.json — каталог node_modules в payload
+// может отсутствовать (он появляется при первом запуске), поэтому его нельзя брать за признак.
 const profiles = [];
 (function walk(dir, depth) {
   if (depth > 6) return;
@@ -26,11 +28,31 @@ const profiles = [];
   for (const it of items) {
     if (!it.isDirectory()) continue;
     const p = join(dir, it.name);
-    if (it.name === "node_modules" && existsSync(join(dir, "package.json"))) { profiles.push(dir); continue; }
+    if (it.name === "profiles") {
+      for (const child of readdirSync(p, { withFileTypes: true })) {
+        if (!child.isDirectory()) continue;
+        const pd = join(p, child.name);
+        if (existsSync(join(pd, "package.json"))) profiles.push(pd);
+      }
+      continue;
+    }
     walk(p, depth + 1);
   }
-})(join(devhome, ".dsh"), 0);
-if (!profiles.length) { console.error("в payload не найдено ни одного профиля (profiles/*/node_modules)"); process.exit(1); }
+})(devhome, 0);
+if (!profiles.length) {
+  console.error("в payload не найдено профилей (profiles/<имя>/package.json) — печатаю дерево для диагностики");
+  (function tree(dir, depth, prefix) {
+    if (depth > 3) return;
+    let items = [];
+    try { items = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const it of items) {
+      if (it.name === "node_modules") continue;
+      console.error(prefix + it.name + (it.isDirectory() ? "/" : ""));
+      if (it.isDirectory()) tree(join(dir, it.name), depth + 1, prefix + "  ");
+    }
+  })(devhome, 0, "  ");
+  process.exit(1);
+}
 
 // Кладём только то, что нужно движку: код, манифест и патч профиля. Тесты и CI-скрипты — не грузим.
 const FILES = ["index.js", "package.json", "cordis.patch.yml", "dsh.bundle.patch", "README.md"];
