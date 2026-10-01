@@ -1,0 +1,22 @@
+{
+  "name": "dsh-tool-agent-kit",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DSH Android: compact screen actions, wait_for, find, step/loop guard, shell risk policy",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./policy": "./lib/policy.js",
+    "./a11y": "./lib/a11y.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/cordis": "*"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

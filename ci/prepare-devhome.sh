@@ -16,4 +16,7 @@ if grep -rqE "sk-[A-Za-z0-9]{20,}" "$DH/.dsh" 2>/dev/null; then echo "!! в payl
 find "$DH/dshroot" -path '*dsh-tool-*' -name index.js -print0 2>/dev/null | while IFS= read -r -d '' f; do
   sed -i "s/\"com\.deepseek\.harness\"/\"$NEW_ID\"/g" "$f"
 done
+# Наш плагин: без этого шага APK собирается без памяти, скиллов и диспетчера.
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+node "$REPO_ROOT/ci/install-agent-kit.mjs" "$DH" "$REPO_ROOT"
 echo "devhome готов: $(ls -1 "$DH" | tr '\n' ' ')"
