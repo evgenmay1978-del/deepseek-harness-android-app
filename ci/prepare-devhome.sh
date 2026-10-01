@@ -6,6 +6,21 @@ rm -rf "$DH"; mkdir -p "$DH" "$DH/build" "$DH/rish"
 TMP="$(mktemp -d)"
 unzip -q -o "$APK" 'assets/payload.zip' -d "$TMP"
 unzip -q -o "$TMP/assets/payload.zip" -d "$DH"
+# Если payload распаковался вложенно (одним корнем) — поднять содержимое наверх:
+# build.sh ждёт $H/git/bin/git, $H/dshroot, $H/.dsh — при вложенности он падает на cp.
+if [ ! -d "$DH/git" ] && [ ! -d "$DH/dshhome" ] && [ ! -d "$DH/dshroot" ]; then
+  for cand in "$DH"/*/; do
+    if [ -d "${cand}dshhome" ] || [ -d "${cand}dshroot" ] || [ -d "${cand}git" ]; then
+      echo "payload вложен в $cand — поднимаю содержимое наверх"
+      for x in "$cand"*; do mv "$x" "$DH"/ 2>/dev/null || true; done
+      rmdir "$cand" 2>/dev/null || true
+      break
+    fi
+  done
+fi
+# Диагностика: что реально лежит в devhome (видно в логе CI).
+echo "состав devhome: $(ls -1 "$DH" | tr '\n' ' ')"
+
 # build.sh ждёт $H/.dsh/{settings.yaml,profiles/web/*}, в payload это dshhome/
 if [ -d "$DH/dshhome" ]; then rm -rf "$DH/.dsh"; mv "$DH/dshhome" "$DH/.dsh"; fi
 printf '#!/bin/sh\n# toolchain берётся с раннера\n:\n' > "$DH/build/env.sh"; chmod +x "$DH/build/env.sh"
