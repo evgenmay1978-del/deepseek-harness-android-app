@@ -127,12 +127,18 @@ export function installScheduleRunner(ctx, opts = {}, deps = {}) {
     if (!o.arm) return;
     const n = nearest(q, nowMs);
     const want = n ? { id: n.id, when: n.when } : null;
-    if (state.armed && want && state.armed.id === want.id && state.armed.when === want.when) return; // уже взведено
+    // Взведённое состояние — и задача, и ЗАГЛУШКА (пустая очередь). Раньше при пустой очереди
+    // want === null, условие не срабатывало, state.armed сбрасывался в null и заглушка ставилась
+    // КАЖДЫЙ тик → приложение слало уведомление «noop (cancelled)» каждые 30 с (найдено 02.10.2026).
+    const already = !!state.armed && (want
+      ? state.armed.id === want.id && state.armed.when === want.when
+      : state.armed.id === null);
+    if (already) return; // уже взведено
     try {
       const text = n ? markedText(n.id, n.text) : NOOP_TEXT;
       const when = n ? fmt(n.when) : NEUTRAL_WHEN;
       const r = await appPost("/schedule", { text, when, repeat: "once", intervalMin: 0 });
-      state.armed = want;
+      state.armed = want || { id: null, when: null };
       state.lastArm = { at: nowMs, ok: !!(r && r.ok), id: want ? want.id : null, when };
       log("[agent-kit] schedule-runner: взведено " + (want ? want.id + " на " + when : "заглушка"));
     } catch (e) {

@@ -54,6 +54,23 @@ test("выключатель: при execute:true исполнитель выз�
   assert.equal(prompted, 1, "с включённым флагом исполнитель работает");
 });
 
+test("пустая очередь: заглушка в слот ставится ОДИН раз, а не каждый тик (регресс 02.10.2026)", async () => {
+  // Причина: при пустой очереди state.armed сбрасывался в null и armNearest постил /schedule каждый тик;
+  // приложение на каждый вызов показывает уведомление → «noop (cancelled)» каждые 30 с в ленте владельца.
+  const fs = mkFs({});
+  let armed = 0;
+  const h = installScheduleRunner({ logger: { warn() {} }, get: () => undefined },
+    { execute: false, intervalMs: 3600e3, startupDelayMs: 3600e3 },
+    { filesDir: "/app", now: () => 2000, readFile: fs.readFile, writeFile: fs.writeFile,
+      appPost: async () => { armed++; return { ok: true }; }, notify: async () => {} });
+  await h.tick();
+  await h.tick();
+  h.stop();
+  assert.equal(armed, 1, "заглушка должна ставиться один раз: иначе уведомление каждые 30 секунд");
+  const st = JSON.parse(fs.mem.get("/app/agent-memory/schedule-runner.json"));
+  assert.deepEqual(st.armed, { id: null, when: null }, "состояние «заглушка взведена» сохраняется в heartbeat");
+});
+
 test("цепочка повторов (тот же taskId, новое время) не даёт дубль в очереди", async () => {
   const fs = mkFs({ "/app/scheduled-tasks.json": "task-9|1000|daily|0|цепочка\n" });
   const h = installScheduleRunner({ logger: { warn() {} }, get: () => undefined },
