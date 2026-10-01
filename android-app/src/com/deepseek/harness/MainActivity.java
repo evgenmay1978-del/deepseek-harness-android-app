@@ -2372,6 +2372,12 @@ public class MainActivity extends Activity {
                         respBody = handleSettingRequest(body.toString());
                     } else if (path.startsWith("/clipboard")) {
                         respBody = handleClipboardRequest(body.toString());
+                    } else if (path.startsWith("/schedule/list")) {
+                        // 列出定时任务：每个 taskId 的最新一条 + 系统里是否真有闹钟（armed）
+                        respBody = handleScheduleList();
+                    } else if (path.startsWith("/schedule/cancel")) {
+                        // 取消任务：撤掉系统闹钟并清理 журнал
+                        respBody = handleScheduleCancel(body.toString());
                     } else if (path.startsWith("/schedule")) {
                         respBody = handleScheduleRequest(body.toString());
                     } else if (path.startsWith("/usage")) {
@@ -2816,7 +2822,7 @@ public class MainActivity extends Activity {
             }
 
             android.app.AlarmManager am = (android.app.AlarmManager) getSystemService(Context.ALARM_SERVICE);
-            // 存任务到文件（AlarmReceiver 到点时读取并自动执行）
+            // 存任务到文件（仅作日志/清单；AlarmReceiver 到点时不读取该文件 — 任务文本来自 Intent extras）
             String taskId = "task-" + System.currentTimeMillis();
             saveScheduledTask(taskId, text, triggerAt, repeat, intervalMin);
             Intent i = new Intent(this, AlarmReceiver.class);
@@ -2825,7 +2831,9 @@ public class MainActivity extends Activity {
             i.putExtra("repeatType", repeat);
             i.putExtra("intervalMin", intervalMin);
             i.putExtra("triggerAt", triggerAt);
-            android.app.PendingIntent pi = android.app.PendingIntent.getBroadcast(this, 0, i,
+            // requestCode = taskId.hashCode()：у каждого задания свой слот, новый больше НЕ затирает прежний.
+            // AlarmReceiver.registerNextAlarm использует то же правило — цепочка повторов заменяет только свой слот.
+            android.app.PendingIntent pi = android.app.PendingIntent.getBroadcast(this, taskId.hashCode(), i,
                     android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
             // 用 setAlarmClock（系统最高优先级闹钟，无需特殊权限、Doze 也触发）最可靠；
             // 失败则降级 setExactAndAllowWhileIdle / set
@@ -2884,6 +2892,108 @@ public class MainActivity extends Activity {
             logSchedule("任务已设置: " + text + " @ " + new java.text.SimpleDateFormat("MM-dd HH:mm:ss", Locale.US).format(new Date(triggerAt)));
         } catch (Throwable t) {
             Log.w(TAG, "saveScheduledTask error", t);
+        }
+    }
+
+    /** Находит уже зарегистрированный будильник задания (только поиск, без создания).
+     *  Ключ обязан совпадать с handleScheduleRequest: тот же компонент + requestCode=taskId.hashCode() + IMMUTABLE. */
+    private android.app.PendingIntent findScheduleAlarm(String taskId) {
+        Intent i = new Intent(this, AlarmReceiver.class);
+        return android.app.PendingIntent.getBroadcast(this, taskId.hashCode(), i,
+                android.app.PendingIntent.FLAG_NO_CREATE | android.app.PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    /** Экранирование строки для JSON, который собирается вручную (внешних библиотек в приложении нет). */
+    private static String scheduleJsonEsc(String s) {
+        if (s == null) return "";
+        StringBuilder b = new StringBuilder();
+        for (int k = 0; k < s.length(); k++) {
+            char c = s.charAt(k);
+            if (c == '"' || c == '\\') b.append('\\').append(c);
+            else if (c == '\n') b.append("\\n");
+            else if (c == '\r') b.append("\\r");
+            else if (c < 0x20) b.append(' ');
+            else b.append(c);
+        }
+        return b.toString();
+    }
+
+    /** /schedule/list — по одному заданию на taskId (последняя строка журнала) + реально ли стоит будильник. */
+    private String handleScheduleList() {
+        try {
+            java.util.LinkedHashMap<String, String[]> latest = new java.util.LinkedHashMap<String, String[]>();
+            File f = scheduledTasksFile();
+            if (f.exists()) {
+                BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(f), "UTF-8"));
+                String line;
+                while ((line = r.readLine()) != null) {
+                    if (line.trim().isEmpty()) continue;
+                    String[] parts = line.split("\\|", 5);
+                    if (parts.length < 5) continue;
+                    latest.put(parts[0], parts);
+                }
+                r.close();
+            }
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"ok\":true,\"count\":").append(latest.size()).append(",\"tasks\":[");
+            boolean first = true;
+            for (java.util.Map.Entry<String, String[]> e : latest.entrySet()) {
+                String[] p = e.getValue();
+                long at = 0;
+                int iv = 0;
+                try { at = Long.parseLong(p[1]); } catch (Exception ignored) {}
+                try { iv = Integer.parseInt(p[3]); } catch (Exception ignored) {}
+                if (!first) sb.append(",");
+                first = false;
+                sb.append("{\"taskId\":\"").append(scheduleJsonEsc(p[0])).append("\"")
+                  .append(",\"triggerAt\":").append(at)
+                  .append(",\"repeat\":\"").append(scheduleJsonEsc(p[2])).append("\"")
+                  .append(",\"intervalMin\":").append(iv)
+                  .append(",\"armed\":").append(findScheduleAlarm(p[0]) != null)
+                  .append(",\"text\":\"").append(scheduleJsonEsc(p[4])).append("\"}");
+            }
+            sb.append("]}");
+            return sb.toString();
+        } catch (Throwable t) {
+            return "{\"ok\":false,\"error\":\"" + scheduleJsonEsc(String.valueOf(t.getMessage())) + "\"}";
+        }
+    }
+
+    /** /schedule/cancel {taskId} — снимает системный будильник и убирает строки задания из журнала.
+     *  Цепочку повторов это останавливает: следующий будильник ставится только из предыдущего срабатывания. */
+    private String handleScheduleCancel(String raw) {
+        try {
+            String taskId = jsonField(raw, "taskId");
+            if (taskId.isEmpty()) taskId = queryField(raw, "taskId");
+            if (taskId.isEmpty()) return "{\"ok\":false,\"error\":\"missing taskId\"}";
+            android.app.PendingIntent pi = findScheduleAlarm(taskId);
+            boolean had = pi != null;
+            if (had) {
+                android.app.AlarmManager am = (android.app.AlarmManager) getSystemService(Context.ALARM_SERVICE);
+                am.cancel(pi);
+            }
+            int removed = 0;
+            File f = scheduledTasksFile();
+            if (f.exists()) {
+                StringBuilder keep = new StringBuilder();
+                BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(f), "UTF-8"));
+                String line;
+                while ((line = r.readLine()) != null) {
+                    if (line.trim().isEmpty()) continue;
+                    String[] parts = line.split("\\|", 2);
+                    if (parts.length >= 1 && parts[0].equals(taskId)) { removed++; continue; }
+                    keep.append(line).append("\n");
+                }
+                r.close();
+                FileOutputStream fos = new FileOutputStream(f, false);
+                fos.write(keep.toString().getBytes("UTF-8"));
+                fos.close();
+            }
+            logSchedule("задание отменено: " + taskId);
+            return "{\"ok\":true,\"taskId\":\"" + scheduleJsonEsc(taskId) + "\",\"alarmRemoved\":" + had
+                    + ",\"linesRemoved\":" + removed + "}";
+        } catch (Throwable t) {
+            return "{\"ok\":false,\"error\":\"" + scheduleJsonEsc(String.valueOf(t.getMessage())) + "\"}";
         }
     }
 
