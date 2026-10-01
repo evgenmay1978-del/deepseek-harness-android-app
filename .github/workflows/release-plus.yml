@@ -47,7 +47,7 @@ jobs:
         env:
           DSH_DEV_HOME: ${{ github.workspace }}/devhome
           JAVA_BIN: ${{ env.JAVA_HOME }}/bin
-        run: cd android-app && sh build.sh
+        run: cd android-app && bash build.sh   # build.sh использует source — нужен bash, а не dash
       - name: Переименовать APK по тегу
         run: |
           VER="${GITHUB_REF_NAME:-manual}"
