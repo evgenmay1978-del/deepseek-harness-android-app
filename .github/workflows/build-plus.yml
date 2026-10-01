@@ -10,7 +10,7 @@ jobs:
     env:
       KEYSTORE_PASS: dsh-plus-local
       KEYSTORE_ALIAS: dsh
-      UPSTREAM_APK: https://github.com/woaiys3/deepseek-harness-android-app/releases/download/v1.16.1/DeepSeekHarness-official-v1.16.1.apk
+      UPSTREAM_APK: https://github.com/woaiys3/deepseek-harness-android-app/releases/download/v1.17.1/DeepSeekHarness-official-v1.17.1.apk
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
