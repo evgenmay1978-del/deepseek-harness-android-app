@@ -88,22 +88,24 @@ export function memoryTool(defineTool, store) {
             const path = injectionLogPath(store);
             const arr = readInjectionLog(path);
             const last = arr[arr.length - 1];
+            const sk = readSkipState(path);
+            const counts = Object.entries(sk.counts).map(([k, v]) => k + "×" + v).join(", ");
+            const injLine = !last ? "инъекций не было"
+              : "последняя инъекция: " + last.at + " · ход " + (last.turn ?? "?") + " шаг " + last.step +
+                " · " + (last.branch || "?") + " · via " + (last.via || "?") + " · запрос " + (last.qlen ?? "?") + " симв" +
+                " (" + (last.terms ?? "?") + " терм.)" +
+                " · выбрано " + ((last.keys && last.keys.length) || 0) +
+                " (закреплено " + (last.pinned ?? "?") + ", совпало " + (last.hits ?? "?") +
+                ", кандидатов " + (last.candidates ?? "?") + ", всего " + (last.total ?? store.count()) + ")" +
+                " · " + last.size + "/" + last.cap;
+            const skipLine = sk.lastSkip
+              ? "последний пропуск: " + sk.lastSkip.at + " · ход " + (sk.lastSkip.turn ?? "?") + " шаг " + sk.lastSkip.step +
+                " · skipped " + sk.lastSkip.skipped + (counts ? " (всего: " + counts + ")" : "")
+              : "пропусков не было";
             return {
               ok: true, count: store.count(),
               text: "память: " + store.count() + " заметок, версия " + store.version() + "\n" +
-                "журнал инъекций: " + path + " (" + arr.length + " записей)\n" +
-                (!last ? "инъекций не было"
-                  : last.skipped
-                  ? "последний пропуск: " + last.at + " · ход " + (last.turn ?? "?") + " шаг " + last.step +
-                    " · " + (last.branch || "?") + " · skipped " + last.skipped +
-                    (last.qlen !== undefined ? " · запрос " + last.qlen + " симв" : "")
-                  : "последняя инъекция: " + last.at + " · ход " + (last.turn ?? "?") + " шаг " + last.step +
-                    " · " + (last.branch || "?") + " · via " + (last.via || "?") + " · запрос " + (last.qlen ?? "?") + " симв" +
-                    " (" + (last.terms ?? "?") + " терм.)" +
-                    " · выбрано " + ((last.keys && last.keys.length) || 0) +
-                    " (закреплено " + (last.pinned ?? "?") + ", совпало " + (last.hits ?? "?") +
-                    ", кандидатов " + (last.candidates ?? "?") + ", всего " + (last.total ?? store.count()) + ")" +
-                    " · " + last.size + "/" + last.cap)
+                "журнал инъекций: " + path + " (" + arr.length + " записей)\n" + injLine + "\n" + skipLine
             };
           }
           case "delete": {
@@ -126,12 +128,27 @@ export function memoryTool(defineTool, store) {
 }
 
 /**
- * Журнал последних инъекций. Пишется из того же места, где обновляется shown,
- * поэтому не может разойтись с реальностью (в отличие от отдельного логгера,
- * чей вызов в рантайме оказался недостижим).
+ * Состояние: { v, injections: [...20], lastSkip, skipCounts }.
+ * Пропуски держим ОТДЕЛЬНО от кольца инъекций: иначе no_delta каждый ход вытесняет записи
+ * реальных инъекций, ради которых кольцо и заведено (ревью 05.10.2026).
+ * Старый формат (просто массив) читается как injections.
  */
+function readRaw(file) {
+  try { return JSON.parse(readFileSync(file, "utf8")); } catch { return null; }
+}
+
+/** Журнал последних инъекций (без пропусков). */
 export function readInjectionLog(file) {
-  try { const a = JSON.parse(readFileSync(file, "utf8")); return Array.isArray(a) ? a : []; } catch { return []; }
+  const a = readRaw(file);
+  if (Array.isArray(a)) return a;
+  return a && Array.isArray(a.injections) ? a.injections : [];
+}
+
+/** Последний пропуск и счётчик по причинам. */
+export function readSkipState(file) {
+  const a = readRaw(file);
+  if (a && !Array.isArray(a)) return { lastSkip: a.lastSkip || null, counts: a.skipCounts || {} };
+  return { lastSkip: null, counts: {} };
 }
 
 /** Путь журнала инъекций рядом с заметками: один источник истины для записи, чтения и статуса. */
@@ -139,17 +156,38 @@ export function injectionLogPath(store) {
   return join(dirname(store.file), "injection-log.json");
 }
 
+function writeState(file, state) {
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = file + ".tmp";
+  writeFileSync(tmp, JSON.stringify(state, null, 1), "utf8");
+  renameSync(tmp, file); // атомарно: обрыв не оставит битый JSON
+}
+
 // Записи сериализуем: два хода подряд или параллельные субагенты пишут в один файл.
 let writeChain = Promise.resolve();
+function loadState(file) {
+  const a = readRaw(file);
+  const injections = Array.isArray(a) ? a : (a && Array.isArray(a.injections) ? a.injections : []);
+  const skips = (a && !Array.isArray(a)) ? { lastSkip: a.lastSkip || null, skipCounts: a.skipCounts || {} } : { lastSkip: null, skipCounts: {} };
+  return { injections, ...skips };
+}
 export function recordInjection(file, rec) {
   writeChain = writeChain.then(() => {
     try {
-      const arr = readInjectionLog(file);
-      arr.push(rec);
-      mkdirSync(dirname(file), { recursive: true });
-      const tmp = file + ".tmp";
-      writeFileSync(tmp, JSON.stringify(arr.slice(-20), null, 1), "utf8");
-      renameSync(tmp, file); // атомарно: обрыв не оставит битый JSON
+      const s = loadState(file);
+      s.injections.push(rec);
+      writeState(file, { v: STATE_SCHEMA, injections: s.injections.slice(-20), lastSkip: s.lastSkip, skipCounts: s.skipCounts });
+    } catch { /* наблюдаемость не должна ронять ход */ }
+  }).catch(() => {});
+  return writeChain;
+}
+export function recordSkip(file, rec) {
+  writeChain = writeChain.then(() => {
+    try {
+      const s = loadState(file);
+      const counts = { ...s.skipCounts };
+      counts[rec.skipped] = (counts[rec.skipped] || 0) + 1;
+      writeState(file, { v: STATE_SCHEMA, injections: s.injections, lastSkip: rec, skipCounts: counts });
     } catch { /* наблюдаемость не должна ронять ход */ }
   }).catch(() => {});
   return writeChain;
@@ -249,7 +287,7 @@ export function installMemoryInjection(ctx, store, opts = {}, deps = {}) {
         const turnNo = payload.turn ?? null;
         if (notedStep.get(session) !== turnNo) {
           notedStep.set(session, turnNo);
-          recordInjection(statePath, { at: new Date().toISOString(), turn: turnNo, step, branch: "standard", v: STATE_SCHEMA, skipped: "not_step1" });
+          recordSkip(statePath, { at: new Date().toISOString(), turn: turnNo, step, branch: "standard", v: STATE_SCHEMA, skipped: "not_step1" });
         }
         return decision;
       }
@@ -273,9 +311,10 @@ export function installMemoryInjection(ctx, store, opts = {}, deps = {}) {
         recent.set(session, prior.slice(-4));
       }
       const hist = recent.get(session) || [];
-      const recentText = (utext && hist[hist.length - 1] !== utext ? [...hist, utext] : hist).slice(-3).join(" ").trim();
-      // Топ-IDF термины по корпусу: редкий терм из длинной вставки ведёт, шум вытесняется.
-      const query = store.keyTerms(recentText, QUERY_MAX_TERMS).join(" ");
+      // Свежая реплика весит больше предыдущих; tf×idf считает keyTerms (редкое мимоходом не ведёт).
+      const recentMsgs = (utext && hist[hist.length - 1] !== utext ? [...hist, utext] : hist).slice(-3);
+      const recentText = recentMsgs.join(" ").trim();
+      const query = store.keyTerms(recentMsgs, QUERY_MAX_TERMS).join(" ");
       // Кап — доля ОКНА МОДЕЛИ (2%), а не размера реплики. Окно 1M → 20k, поэтому реальный
       // потолок — maxChars. Прежняя формула (2% от ХОДА) на длинной реплике давала 58 символов
       // и молча съедала инъекцию (живой случай 04.10.2026: cap 58 при заметке 507).
@@ -312,7 +351,7 @@ export function installMemoryInjection(ctx, store, opts = {}, deps = {}) {
           : sel.counts.fresh === 0 ? "no_delta"
           : sel.overflow ? "cap"
           : "no_delta";
-        recordInjection(statePath, { ...base, skipped });
+        recordSkip(statePath, { ...base, skipped });
       }
       stale.delete(session);
       if (!body) { shown.set(session, new Set(prev)); return decision; }

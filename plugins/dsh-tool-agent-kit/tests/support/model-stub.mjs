@@ -6,6 +6,8 @@
  * env:
  *   STUB_PORT  — порт (по умолчанию 3099)
  *   STUB_MODE  — ok | retry-3 | fail-always | quota-402 | stream-break | slow | rate-limit-429
+ *   slow          — отвечает через STUB_DELAY_MS (проверка таймаута)
+ *   rate-limit-429— всегда 429 с Retry-After: 1 (проверка повтора)
  *   STUB_DELAY_MS — задержка для slow (по умолчанию 120000)
  *   STUB_LOG   — путь jsonl (по умолчанию stub-requests.jsonl)
  *
@@ -30,6 +32,12 @@ const completion = (text) => ({
 });
 
 createServer((req, res) => {
+  // Отвергаем всё, что не с localhost: утечка настройки стенда не должна уйти в сеть.
+  const ra = req.socket.remoteAddress || "";
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(ra)) {
+    res.writeHead(403, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ error: { message: "stub rejects non-local address: " + ra } }));
+  }
   let raw = "";
   req.on("data", (c) => (raw += c));
   req.on("end", () => {

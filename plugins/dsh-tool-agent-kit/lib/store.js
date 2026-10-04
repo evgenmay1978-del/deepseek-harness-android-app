@@ -164,26 +164,35 @@ export class MemoryStore {
   }
 
   /**
-   * Топ-термины запроса по IDF по корпусу заметок. Длинная реплика (вставка отчёта) не должна
-   * перевешивать суть вопроса: редкие термины корпуса весят больше. Термины вне корпуса
-   * отбрасываются — они всё равно ничего не найдут.
+   * Топ-термины запроса по tf×idf по корпусу заметок. Одного IDF мало: редкое слово,
+   * упомянутое мимоходом, получало максимальный вес. Учитываем частоту в реплике, а свежая
+   * реплика весит вдвое больше предыдущей. Термины вне корпуса отбрасываются.
+   * input — строка или массив реплик (последняя = самая свежая).
    */
-  keyTerms(text, limit = 15) {
-    const q = tokens(text);
-    if (q.length === 0) return [];
+  keyTerms(input, limit = 15) {
+    const messages = (Array.isArray(input) ? input : [input]).map((s) => String(s ?? ""));
+    const n = messages.length;
+    const tf = new Map();
+    const fresh = new Map();
+    messages.forEach((msg, i) => {
+      const w = n > 1 && i === n - 1 ? 2 : 1; // свежая реплика важнее предыдущих
+      for (const t of tokens(msg)) {
+        tf.set(t, (tf.get(t) || 0) + w);
+        if (!fresh.has(t)) fresh.set(t, i);
+      }
+    });
+    if (tf.size === 0) return [];
     const items = this.#load().items;
     const N = items.length || 1;
     const docs = items.map((it) => norm(it.text + " " + it.tags));
-    const seen = new Set();
     const scored = [];
-    for (const t of q) {
-      if (seen.has(t)) continue;
-      seen.add(t);
-      const df = docs.reduce((n, d) => n + (d.includes(t) ? 1 : 0), 0);
+    for (const [t, f] of tf) {
+      const df = docs.reduce((k, d) => k + (d.includes(t) ? 1 : 0), 0);
       if (df === 0) continue; // терм вне корпуса не найдёт ничего
-      scored.push({ t, idf: Math.log((N + 1) / (df + 1)) + 1 });
+      const idf = Math.log((N + 1) / (df + 1)) + 1;
+      scored.push({ t, score: f * idf, fresh: fresh.get(t) });
     }
-    scored.sort((a, b) => b.idf - a.idf);
+    scored.sort((a, b) => b.score - a.score || b.fresh - a.fresh);
     return scored.slice(0, Math.max(1, limit)).map((x) => x.t);
   }
 

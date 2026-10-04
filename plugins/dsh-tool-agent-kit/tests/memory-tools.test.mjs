@@ -128,7 +128,7 @@ test("контракт хука: на шаге 1 ввод из payload.messages 
 
 test("реальная фикстура журнала: несовпавший запрос без закреплённых — НЕ дампим память", async () => {
   const { MemoryStore } = await import("../lib/store.js");
-  const { installMemoryInjection, readInjectionLog, userTextOf } = await import("../lib/memory.js");
+  const { installMemoryInjection, readInjectionLog, readSkipState, userTextOf } = await import("../lib/memory.js");
   const { REAL_TURN1_WITH_FILE, REAL_TURN34 } = await import("./support/journal-fixture.mjs");
   const { mkdtempSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -145,9 +145,9 @@ test("реальная фикстура журнала: несовпавший �
   const payload = { agent: { session: { id: "real" } }, turn: 34, step: 1, signal: { aborted: false }, messages: [REAL_TURN34] };
   const out = await handler(payload, async () => ({ kind: "enter", messages: [] }));
   assert.equal(out.messages.length, 0, "несовпавший запрос больше не дампит всю память");
-  const skip = readInjectionLog(join(dirname(store.file), "injection-log.json"));
-  assert.equal(skip.length, 1, "пропуск записан — иначе не отличить от «хук не сработал»");
-  assert.equal(skip[0].skipped, "no_match", "причина: заметки есть, но запрос не совпал");
+  const logPath = join(dirname(store.file), "injection-log.json");
+  assert.equal(readInjectionLog(logPath).length, 0, "в кольцо инъекций пропуск не пишется");
+  assert.equal(readSkipState(logPath).lastSkip.skipped, "no_match", "причина в lastSkip: заметки есть, но запрос не совпал");
 });
 
 test("несовпавший запрос показывает ТОЛЬКО закреплённые + версию схемы", async () => {
@@ -202,7 +202,7 @@ test("IDF-запрос: редкий терм в длинной реплике �
 
 test("пропуск с причиной: no_delta на повторе и not_step1 в середине хода", async () => {
   const { MemoryStore } = await import("../lib/store.js");
-  const { installMemoryInjection, readInjectionLog } = await import("../lib/memory.js");
+  const { installMemoryInjection, readInjectionLog, readSkipState } = await import("../lib/memory.js");
   const { mkdtempSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join, dirname } = await import("node:path");
@@ -216,15 +216,50 @@ test("пропуск с причиной: no_delta на повторе и not_st
   const next = async () => ({ kind: "enter", messages: [] });
   const path = join(dirname(store.file), "injection-log.json");
   await handler(mk(1, 1), next); // инъекция
+  assert.equal(readInjectionLog(path).length, 1, "инъекция в кольце");
   await handler(mk(1, 2), next); // тот же набор → дельта пуста
-  let st = readInjectionLog(path);
-  assert.equal(st[st.length - 1].skipped, "no_delta", "повторный набор: no_delta");
+  assert.equal(readSkipState(path).lastSkip.skipped, "no_delta", "повторный набор: no_delta");
+  assert.equal(readInjectionLog(path).length, 1, "пропуск кольцо инъекций не забивает");
   await handler(mk(2, 2), next);
-  st = readInjectionLog(path);
-  assert.equal(st[st.length - 1].skipped, "not_step1", "середина хода: not_step1");
-  const before = st.length;
+  assert.equal(readSkipState(path).lastSkip.skipped, "not_step1", "середина хода: not_step1");
+  const before = readSkipState(path).counts.not_step1 || 0;
   await handler(mk(3, 2), next);
-  assert.equal(readInjectionLog(path).length, before, "not_step1 пишется один раз на ход");
+  assert.equal((readSkipState(path).counts.not_step1 || 0), before, "not_step1 пишется один раз на ход");
+});
+
+test("keyTerms: tf×idf — частое в реплике выше редкого мимоходом", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "kt-tf-")), "notes.json"));
+  store.add({ text: "заметка про частотный термин" });
+  store.add({ text: "заметка про редкий термин" });
+  const terms = store.keyTerms("частотный частотный частотный редкий", 5);
+  assert.equal(terms[0], "частот", "частый в реплике ведёт: " + terms.join(","));
+});
+
+test("keyTerms: свежая реплика весит больше предыдущей", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "kt-fresh-")), "notes.json"));
+  store.add({ text: "заметка про альфатермин" });
+  store.add({ text: "заметка про бетатермин" });
+  const terms = store.keyTerms(["альфатермин", "бетатермин"], 5);
+  assert.equal(terms[0], "бетате", "свежая реплика (бета) ведёт: " + terms.join(","));
+});
+
+test("keyTerms: нормализация «роутера»/«роутер» одинакова", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "kt-norm-")), "notes.json"));
+  store.add({ text: "роутер s4owner" });
+  const terms = store.keyTerms("роутера", 5);
+  assert.ok(terms.includes("роутер"), "«роутера» усекается до «роутер» (как в индексе): " + terms.join(","));
 });
 
 test("длинная реплика не съедает инъекцию: кап — от окна, не от хода", async () => {
