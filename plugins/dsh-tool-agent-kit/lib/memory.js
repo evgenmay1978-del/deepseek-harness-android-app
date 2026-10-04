@@ -40,10 +40,11 @@ export function memoryTool(defineTool, store) {
     description:
       "Долговременная память между чатами и перезапусками. Сохраняйте только устойчивые факты: предпочтения пользователя, " +
       "особенности устройства/приложений, найденные рабочие приёмы, договорённости. НЕ сохраняйте пароли, токены, одноразовые данные. " +
-      "action: add (text, tags через запятую, pinned, origin) | search (query) | list | delete (id) | pin/unpin (id). " +
+      "action: add (text, tags через запятую, pinned, origin) | search (query) | list | delete (id) | pin/unpin (id) | " +
+      "status (живое состояние журнала инъекций: что и когда показывалось модели). " +
       "Заметка ≤ 500 символов; дубликаты объединяются. Сохранённые заметки автоматически показываются в начале хода.",
     parameters: {
-      action: { type: "string", required: true, enum: ["add", "search", "list", "delete", "pin", "unpin"], description: "Операция" },
+      action: { type: "string", required: true, enum: ["add", "search", "list", "delete", "pin", "unpin", "status"], description: "Операция" },
       text: { type: "string", description: "add: текст заметки (до 500 символов)" },
       tags: { type: "string", description: "add: теги через запятую" },
       pinned: { type: "boolean", description: "add: сразу закрепить (закреплённые показываются первыми и не вытесняются)" },
@@ -75,6 +76,23 @@ export function memoryTool(defineTool, store) {
             const items = store.list(limit);
             return { ok: true, count: store.count(), text: items.length ? items.map(formatItem).join("\n") : "Память пуста" };
           }
+          case "status": {
+            // Живое чтение файла СЕЙЧАС: строка self-check говорит про инъекцию ДО старта,
+            // а это — состояние на момент вызова.
+            const path = injectionLogPath(store);
+            const arr = readInjectionLog(path);
+            const last = arr[arr.length - 1];
+            return {
+              ok: true, count: store.count(),
+              text: "память: " + store.count() + " заметок, версия " + store.version() + "\n" +
+                "журнал инъекций: " + path + " (" + arr.length + " записей)\n" +
+                (last
+                  ? "последняя инъекция: " + last.at + " · ход " + (last.turn ?? "?") + " шаг " + last.step +
+                    " · " + (last.branch || "?") + " · via " + (last.via || "?") + " · запрос " + (last.qlen ?? "?") + " симв" +
+                    " · заметок " + ((last.keys && last.keys.length) || 0) + " · " + last.size + "/" + last.cap
+                  : "инъекций не было")
+            };
+          }
           case "delete": {
             if (!args.id) return { ok: false, error: "нужен id" };
             return store.remove(args.id) ? { ok: true, count: store.count(), text: "Удалено: " + args.id } : { ok: false, error: "заметка " + args.id + " не найдена" };
@@ -103,6 +121,11 @@ export function readInjectionLog(file) {
   try { const a = JSON.parse(readFileSync(file, "utf8")); return Array.isArray(a) ? a : []; } catch { return []; }
 }
 
+/** Путь журнала инъекций рядом с заметками: один источник истины для записи, чтения и статуса. */
+export function injectionLogPath(store) {
+  return join(dirname(store.file), "injection-log.json");
+}
+
 // Записи сериализуем: два хода подряд или параллельные субагенты пишут в один файл.
 let writeChain = Promise.resolve();
 export function recordInjection(file, rec) {
@@ -117,6 +140,19 @@ export function recordInjection(file, rec) {
     } catch { /* наблюдаемость не должна ронять ход */ }
   }).catch(() => {});
   return writeChain;
+}
+
+/**
+ * Текст запроса из UserMessage. В ядре content ВСЕГДА массив блоков
+ * (UserMessage.content: ContentBlock[]), строковая ветка — совместимость.
+ * Берём только блоки type="text": file/image/reasoning в запрос не входят.
+ * Проверено по реальному журналу session-7db2f18c (04.10.2026): все user/message — массивы.
+ */
+export function userTextOf(message) {
+  const c = message && message.content;
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) return c.filter((b) => b && b.type === "text").map((b) => b.text || "").join(" ");
+  return "";
 }
 
 /**
@@ -151,7 +187,7 @@ export function installMemoryInjection(ctx, store, opts = {}, deps = {}) {
   const maxChars = opts.maxChars ?? 1800;
   const getLlm = makeLlmGetter(ctx, deps);
   const shown = new WeakMap(); // session -> Set<ключ id:updated> уже показанных заметок
-  const statePath = opts.statePath || join(dirname(store.file), "injection-log.json");
+  const statePath = opts.statePath || injectionLogPath(store);
   // Компакция выбрасывает показанный блок [memory] из истории, а кэш «уже показывали» остаётся —
   // заметки исчезали бы до следующего изменения памяти (это и есть потеря памяти на длинных задачах).
   // Поэтому после compaction/end помечаем сессию и показываем заметки заново на ближайшем шаге.
@@ -179,26 +215,29 @@ export function installMemoryInjection(ctx, store, opts = {}, deps = {}) {
       if (!refresh && step !== 1) return decision;
       const v = store.version();
       const prev = refresh ? new Set() : (shown.get(session) || new Set());
-      const um = (stepMessages || []).find((x) => x && x.role === "user");
-      const utext = um ? (typeof um.content === "string" ? um.content : (Array.isArray(um.content) ? um.content.map((c) => (c && c.text) || "").join(" ") : "")) : "";
+      const utext = userTextOf((stepMessages || []).find((x) => x && x.role === "user")).trim();
       // Квота: не более 2% контекста хода (и не больше maxChars)
       const pool = (decision.messages && decision.messages.length ? decision.messages : stepMessages) || [];
       const totalChars = pool.reduce((n, x) => n + JSON.stringify(x).length, 0);
       const capChars = totalChars > 2000 ? Math.min(maxChars, Math.floor(totalChars * 0.02)) : maxChars;
       // Раньше fallback звал store.render и терял ключи (keys=[] в состоянии).
       // Теперь fallback — тот же selectInjection с all=true: и дельта, и ключи на месте.
+      // via/qlen в состоянии различают три случая: запрос дал совпадения (query),
+      // запрос был, но не совпал (fallback, qlen>0), запроса не было (fallback, qlen=0).
+      let via = "query";
       let sel = selectInjection(store, { query: utext, shown: prev, maxItems, capChars });
-      if (!sel.text) sel = selectInjection(store, { query: "", shown: prev, maxItems, capChars, all: true });
-      let body = sel.text;
-      let injectedIds = sel.ids;
+      if (!sel.text) { via = "fallback"; sel = selectInjection(store, { query: "", shown: prev, maxItems, capChars, all: true }); }
+      const body = sel.text;
+      const injectedIds = sel.ids;
       // Инъекция — это вещание, а не использование: used НЕ трогаем (иначе петля самоподтверждения).
       if (body) {
         recordInjection(statePath, {
           at: new Date().toISOString(), turn: payload.turn ?? null, step,
           branch: refresh ? "refresh" : "standard",
+          via, qlen: utext.length,
           keys: [...injectedIds], size: body.length, cap: capChars
         });
-        log("[agent-kit] memory injected: " + (injectedIds.size ? [...injectedIds].join(",") : "fallback-dump") + " (cap " + capChars + ")");
+        log("[agent-kit] memory injected: " + injectedIds.size + " шт, via " + via + ", запрос " + utext.length + " симв (cap " + capChars + ")");
       }
       stale.delete(session);
       if (!body) { shown.set(session, new Set(prev)); return decision; }

@@ -15,7 +15,7 @@ import { compact, fingerprint, diff, render, line } from "./lib/screen.js";
 import { installGuard, notifyApp } from "./lib/guard.js";
 import { ensureAccessibility } from "./lib/a11y-boot.js";
 import { MemoryStore } from "./lib/store.js";
-import { memoryTool, installMemoryInjection, readInjectionLog } from "./lib/memory.js";
+import { memoryTool, installMemoryInjection, readInjectionLog, injectionLogPath } from "./lib/memory.js";
 import { detectFilesDir } from "./lib/paths.js";
 import { registerScheduleTools } from "./lib/schedule-tools.js";
 import { installScheduleGate } from "./lib/schedule-gate.js";
@@ -252,12 +252,13 @@ function apply(ctx) {
 
   // ───────────── agent_memory (долговременная память) ─────────────
   let memoryCount;
+  let memoryStore; // объявлен ВНЕ if: self-check ниже читает журнал через это хранилище
   if (process.env.DSH_MEMORY !== "off") {
     const file = process.env.DSH_MEMORY_FILE || join(detectFilesDir(), "agent-memory", "notes.json");
-    const store = new MemoryStore(file);
-    ctx.tools.register(memoryTool(defineTool, store));
-    installMemoryInjection(ctx, store);
-    memoryCount = () => store.count();
+    memoryStore = new MemoryStore(file);
+    ctx.tools.register(memoryTool(defineTool, memoryStore));
+    installMemoryInjection(ctx, memoryStore);
+    memoryCount = () => memoryStore.count();
   }
 
   // ───────────── планировщик: список и отмена (см. lib/schedule.js) ─────────────
@@ -300,7 +301,9 @@ function apply(ctx) {
 
   // ───────────── самопроверка: одна строка в лог о том, что реально смонтировано ─────────────
   // Ловит частичное монтирование (инструмент не зарегистрировался) и расхождение скиллов на диске.
-  installSelfCheck(ctx, { memoryCount, injectionLog: () => readInjectionLog(store.file.replace(/notes\.json$/, "injection-log.json")) });
+  // Путь журнала — от самого хранилища. Прежняя версия ссылалась на store, объявленный ВНУТРИ if,
+  // и arrow падала с ReferenceError, теряя всю строку self-check (vm-проба 04.10.2026: "store is not defined").
+  installSelfCheck(ctx, { memoryCount, ...(memoryStore ? { injectionLog: () => readInjectionLog(injectionLogPath(memoryStore)) } : {}) });
 
   // ───────────── виртуальный экран: открыть URL на нужном дисплее ─────────────
   // android_intent не прокидывает --display, а ввод в адресную строку уходит в поиск — здесь правильный путь.

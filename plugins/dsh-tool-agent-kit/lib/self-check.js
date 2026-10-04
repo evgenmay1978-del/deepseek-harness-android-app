@@ -41,21 +41,43 @@ export function installSelfCheck(ctx, opts = {}) {
   const files = opts.filesDir || detectFilesDir();
   const run = () => {
     try {
-      const names = opts.tools || KIT_TOOLS;
-      const missing = names.filter((n) => { try { return typeof ctx.tools?.get !== "function" || !ctx.tools.get(n); } catch { return true; } });
-      const live = countSkills(join(files, "payload/dshhome/skills"), true);
-      const mirror = countSkills(join(files, ".agents/skills"), false);
-      const mem = opts.memoryCount ? opts.memoryCount() : undefined;
-      const injArr = opts.injectionLog ? opts.injectionLog() : [];
-      const lastInj = injArr[injArr.length - 1];
-      const line = "[agent-kit] самопроверка: инструменты " + (names.length - missing.length) + "/" + names.length +
-        (missing.length ? " (НЕТ в реестре: " + missing.join(", ") + ")" : "") +
-        " · правил роутера " + RULES.length +
-        " · раннер " + (process.env.DSH_SCHEDULE_RUNNER === "off" ? "выкл" : "вкл") +
-        " · гейт отмены " + (process.env.DSH_SCHEDULE_GATE === "off" ? "выкл" : "вкл") +
-        " · скиллов на диске " + live.total + "/" + mirror.total + " (скрытых от модели " + live.hidden + ")" +
-        (mem === undefined ? "" : " · память " + mem + " заметок") +
-        (lastInj ? " · инъекция " + lastInj.at + " " + lastInj.branch + " " + (lastInj.keys || []).length + " шт, " + lastInj.size + "/" + lastInj.cap : " · инъекций не было");
+      // Каждая секция в своём try/catch: падение одной строки не должно съедать остальные.
+      // (04.10.2026: ReferenceError в чтении журнала стирал всю строку самопроверки целиком.)
+      const parts = [];
+      const section = (label, fn) => {
+        try { const s = fn(); if (s) parts.push(s); }
+        catch (e) { parts.push(label + ": НЕ УДАЛОСЬ (" + ((e && e.message) || e) + ")"); }
+      };
+      section("инструменты", () => {
+        const names = opts.tools || KIT_TOOLS;
+        const missing = names.filter((n) => { try { return typeof ctx.tools?.get !== "function" || !ctx.tools.get(n); } catch { return true; } });
+        return "инструменты " + (names.length - missing.length) + "/" + names.length +
+          (missing.length ? " (НЕТ в реестре: " + missing.join(", ") + ")" : "");
+      });
+      parts.push("правил роутера " + RULES.length);
+      parts.push("раннер " + (process.env.DSH_SCHEDULE_RUNNER === "off" ? "выкл" : "вкл"));
+      parts.push("гейт отмены " + (process.env.DSH_SCHEDULE_GATE === "off" ? "выкл" : "вкл"));
+      section("скиллы", () => {
+        const live = countSkills(join(files, "payload/dshhome/skills"), true);
+        const mirror = countSkills(join(files, ".agents/skills"), false);
+        return "скиллов на диске " + live.total + "/" + mirror.total + " (скрытых от модели " + live.hidden + ")";
+      });
+      section("память", () => {
+        const mem = opts.memoryCount ? opts.memoryCount() : undefined;
+        return mem === undefined ? "" : "память " + mem + " заметок";
+      });
+      // Строка пишется на старте, поэтому показывает инъекцию ПРОШЛОЙ сессии — подписано явно.
+      // Живое состояние на момент вызова даёт agent_memory(action="status").
+      section("инъекция", () => {
+        const injArr = opts.injectionLog ? opts.injectionLog() : [];
+        const last = Array.isArray(injArr) ? injArr[injArr.length - 1] : null;
+        return last
+          ? "последняя инъекция ДО СТАРТА: " + last.at + " " + (last.branch || "?") +
+            " via " + (last.via || "?") + " (запрос " + (last.qlen ?? "?") + " симв) " +
+            ((last.keys || []).length) + " шт, " + last.size + "/" + last.cap
+          : "инъекций ДО СТАРТА не было";
+      });
+      const line = "[agent-kit] самопроверка: " + parts.join(" · ");
       // Пишем и в свой файл: лог плагинов (<files>/payload/dshhome/logs/plugins.log) после перезапусков
       // приложения перестаёт пополняться (проверено 30.09.2026: последняя запись 20:44, старты в 21:00–23:44 — тишина).
       if (opts.logFile !== false) {

@@ -111,7 +111,8 @@ test("контракт хука: на шаге 1 ввод из payload.messages 
   installMemoryInjection(ctx, store, {}, { llm });
   assert.ok(handler, "хук agent/pre-step зарегистрирован");
   const session = { id: "s1" };
-  const payload = { agent: { session }, step: 1, signal: { aborted: false }, messages: [{ role: "user", content: "что по роутеру s4owner?" }] };
+  // content — массив блоков, как в реальном журнале (tests/support/journal-fixture.mjs), а не строка.
+  const payload = { agent: { session }, step: 1, signal: { aborted: false }, messages: [{ role: "user", content: [{ type: "text", text: "что по роутеру s4owner?" }] }] };
   const decision = { kind: "enter", messages: [] };
   const out = await handler(payload, async () => decision);
   assert.equal(out.messages.length, 1, "хук добавил сообщение памяти");
@@ -119,8 +120,54 @@ test("контракт хука: на шаге 1 ввод из payload.messages 
   const st = readInjectionLog(join(dirname(store.file), "injection-log.json"));
   assert.equal(st.length, 1, "состояние инъекции записано");
   assert.equal(st[0].branch, "standard", "ветка — штатная");
+  assert.equal(st[0].via, "query", "via — запрос дал совпадения");
+  assert.equal(st[0].qlen, "что по роутеру s4owner?".length, "длина запроса в символах записана");
   assert.ok(String(st[0].keys[0]).startsWith("m1:"), "ключ id:updated");
   assert.ok(st[0].size > 0 && st[0].cap > 0, "размер и кап записаны");
+});
+
+test("реальная фикстура журнала: несовпавший запрос → via=fallback + qlen, ключи не теряются", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { installMemoryInjection, readInjectionLog, userTextOf } = await import("../lib/memory.js");
+  const { REAL_TURN1_WITH_FILE, REAL_TURN34 } = await import("./support/journal-fixture.mjs");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join, dirname } = await import("node:path");
+  // Блоки не-text (file) в запрос не попадают; берётся только текст
+  assert.equal(userTextOf(REAL_TURN34), "Перезагрузил", "текстовый блок прочитан");
+  assert.equal(userTextOf(REAL_TURN1_WITH_FILE), "Добавить этот апи можно?", "file-блок проигнорирован");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "real-")), "notes.json"));
+  store.add({ text: "роутер s4owner клиент" });
+  let handler = null;
+  const ctx = { on: (ev, fn) => { if (ev === "agent/pre-step") handler = fn; }, logger: { warn() {} } };
+  const llm = { createUserMessage: (m) => m, boundContextSummary: (k) => k };
+  installMemoryInjection(ctx, store, {}, { llm });
+  const payload = { agent: { session: { id: "real" } }, turn: 34, step: 1, signal: { aborted: false }, messages: [REAL_TURN34] };
+  const out = await handler(payload, async () => ({ kind: "enter", messages: [] }));
+  assert.equal(out.messages.length, 1, "fallback всё равно показывает заметки (дамп)");
+  const st = readInjectionLog(join(dirname(store.file), "injection-log.json"));
+  assert.equal(st.length, 1, "состояние записано");
+  assert.equal(st[0].via, "fallback", "запрос был, но не совпал — fallback");
+  assert.equal(st[0].qlen, "Перезагрузил".length, "qlen показывает, что запрос НЕ пустой");
+  assert.ok(st[0].keys.length >= 1, "fallback сохраняет ключи, а не keys=[]");
+});
+
+test("agent_memory(status) читает журнал инъекций на момент вызова", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { memoryTool, injectionLogPath, recordInjection } = await import("../lib/memory.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "st-")), "notes.json"));
+  store.add({ text: "заметка" });
+  const tool = memoryTool((x) => x, store);
+  let res = await tool.execute({ action: "status" });
+  assert.equal(res.ok, true);
+  assert.ok(res.text.includes("инъекций не было"), "пока журнала нет — так и говорит");
+  await recordInjection(injectionLogPath(store), { at: "2026-10-04T18:23:15.725Z", turn: 34, step: 1, branch: "standard", via: "fallback", qlen: 12, keys: ["m1:1"], size: 975, cap: 1800 });
+  res = await tool.execute({ action: "status" });
+  assert.ok(res.text.includes("последняя инъекция: 2026-10-04T18:23:15.725Z"), "видно время последней инъекции");
+  assert.ok(res.text.includes("via fallback") && res.text.includes("запрос 12 симв"), "видно via и длину запроса");
 });
 
 test("контракт хука: середина хода молчит, после компакции показывает заново", async () => {
