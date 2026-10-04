@@ -7,8 +7,8 @@
  *  - version растёт при каждом изменении — по нему решаем, пора ли снова показать заметки модели.
  * (взято из dsh-tool-agent-kit v0.3, 30.09.2026)
  */
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, readdirSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 export const LIMITS = { maxItems: 200, maxText: 500, maxTagsLen: 80 };
 
@@ -45,6 +45,24 @@ export class MemoryStore {
     const tmp = this.file + ".tmp";
     writeFileSync(tmp, JSON.stringify(d), "utf8");
     renameSync(tmp, this.file);
+    this.#mirror();
+  }
+
+  /** Зеркало markdown: заметки agent_memory видны memory_search (walkMd индексирует подкаталоги). */
+  #mirror() {
+    const dir = join(dirname(this.file), "notes");
+    try {
+      mkdirSync(dir, { recursive: true });
+      const seen = new Set();
+      for (const it of this.#load().items) {
+        seen.add(it.id + ".md");
+        const fm = "---\nid: " + it.id + "\ntags: " + (it.tags || "") + "\nupdated: " + new Date(it.updated).toISOString().slice(0, 10) + "\n---\n" + it.text;
+        writeFileSync(join(dir, it.id + ".md"), fm, "utf8");
+      }
+      for (const f of readdirSync(dir)) {
+        if (f.endsWith(".md") && !seen.has(f)) { try { rmSync(join(dir, f), { force: true }); } catch { /* не критично */ } }
+      }
+    } catch { /* зеркало не критично */ }
   }
 
   version() { return this.#load().version; }

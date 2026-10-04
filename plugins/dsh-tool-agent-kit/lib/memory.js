@@ -119,7 +119,16 @@ export function installMemoryInjection(ctx, store, opts = {}, deps = {}) {
       if (!refresh && (step !== 1 || decision.messages.length === 0)) return decision; // иначе только начало хода с вводом
       const v = store.version();
       if (!refresh && shown.get(session) === v) return decision;
-      const body = store.render(maxItems, maxChars);
+      const um = decision.messages.find((x) => x && x.role === "user");
+      const utext = um ? (typeof um.content === "string" ? um.content : (Array.isArray(um.content) ? um.content.map((c) => (c && c.text) || "").join(" ") : "")) : "";
+      let body = "";
+      if (utext.trim()) {
+        const hits = store.search(utext, 5);
+        const pinned = store.list(50).filter((i) => i.pinned);
+        const merged = [...new Map([...pinned, ...hits].map((i) => [i.id, i])).values()].slice(0, maxItems);
+        body = merged.map(formatItem).join("\n");
+      }
+      if (!body) body = store.render(maxItems, maxChars);
       stale.delete(session);
       if (!body) { shown.set(session, v); return decision; }
       const llm = await getLlm();

@@ -56,6 +56,27 @@ test("сквозной тест через installMemoryIndex: поиск нах
   mi.stop();
 });
 
+test("заметки agent_memory видны в memory_search (зеркало markdown)", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { installMemoryIndex } = await import("../lib/memory-tools.js");
+  const { mkdtempSync, existsSync, readdirSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = mkdtempSync(join(tmpdir(), "mem-uni-"));
+  const store = new MemoryStore(join(root, "agent-memory", "notes.json"));
+  store.add({ text: "DSH: polza настроен, ключ в .credentials.yaml", tags: "dsh,polza" });
+  store.add({ text: "запомни про router s4owner", tags: "vpn" });
+  assert.ok(existsSync(join(root, "agent-memory", "notes", "m1.md")), "зеркало m1 создано");
+  assert.equal(readdirSync(join(root, "agent-memory", "notes")).filter(f => f.endsWith(".md")).length, 2, "зеркала обеих заметок");
+  const mi = installMemoryIndex(null, { dirs: [join(root, "agent-memory")], registerTool: false });
+  const hits = mi.search("polza", { limit: 5 });
+  assert.ok(hits.some(h => h.body.includes("polza")), "заметка agent_memory находится через memory_search");
+  assert.ok(mi.search("s4owner", { limit: 5 }).some(h => h.body.includes("router")), "вторая заметка тоже видна");
+  store.remove("m1");
+  assert.ok(!existsSync(join(root, "agent-memory", "notes", "m1.md")), "зеркало удалено вместе с заметкой");
+  mi.stop();
+});
+
 test("в результатах поиска видно происхождение записи", async () => {
   const { installMemoryIndex } = await import("../lib/memory-tools.js");
   const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
