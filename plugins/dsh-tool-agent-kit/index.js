@@ -15,7 +15,7 @@ import { compact, fingerprint, diff, render, line } from "./lib/screen.js";
 import { installGuard, notifyApp } from "./lib/guard.js";
 import { ensureAccessibility } from "./lib/a11y-boot.js";
 import { MemoryStore } from "./lib/store.js";
-import { memoryTool, installMemoryInjection } from "./lib/memory.js";
+import { memoryTool, installMemoryInjection, readInjectionLog } from "./lib/memory.js";
 import { detectFilesDir } from "./lib/paths.js";
 import { registerScheduleTools } from "./lib/schedule-tools.js";
 import { installScheduleGate } from "./lib/schedule-gate.js";
@@ -300,7 +300,7 @@ function apply(ctx) {
 
   // ───────────── самопроверка: одна строка в лог о том, что реально смонтировано ─────────────
   // Ловит частичное монтирование (инструмент не зарегистрировался) и расхождение скиллов на диске.
-  installSelfCheck(ctx, { memoryCount });
+  installSelfCheck(ctx, { memoryCount, injectionLog: () => readInjectionLog(store.file.replace(/notes\.json$/, "injection-log.json")) });
 
   // ───────────── виртуальный экран: открыть URL на нужном дисплее ─────────────
   // android_intent не прокидывает --display, а ввод в адресную строку уходит в поиск — здесь правильный путь.

@@ -46,13 +46,16 @@ export function installSelfCheck(ctx, opts = {}) {
       const live = countSkills(join(files, "payload/dshhome/skills"), true);
       const mirror = countSkills(join(files, ".agents/skills"), false);
       const mem = opts.memoryCount ? opts.memoryCount() : undefined;
+      const injArr = opts.injectionLog ? opts.injectionLog() : [];
+      const lastInj = injArr[injArr.length - 1];
       const line = "[agent-kit] самопроверка: инструменты " + (names.length - missing.length) + "/" + names.length +
         (missing.length ? " (НЕТ в реестре: " + missing.join(", ") + ")" : "") +
         " · правил роутера " + RULES.length +
         " · раннер " + (process.env.DSH_SCHEDULE_RUNNER === "off" ? "выкл" : "вкл") +
         " · гейт отмены " + (process.env.DSH_SCHEDULE_GATE === "off" ? "выкл" : "вкл") +
         " · скиллов на диске " + live.total + "/" + mirror.total + " (скрытых от модели " + live.hidden + ")" +
-        (mem === undefined ? "" : " · память " + mem + " заметок");
+        (mem === undefined ? "" : " · память " + mem + " заметок") +
+        (lastInj ? " · инъекция " + lastInj.at + " " + lastInj.branch + " " + (lastInj.keys || []).length + " шт, " + lastInj.size + "/" + lastInj.cap : " · инъекций не было");
       // Пишем и в свой файл: лог плагинов (<files>/payload/dshhome/logs/plugins.log) после перезапусков
       // приложения перестаёт пополняться (проверено 30.09.2026: последняя запись 20:44, старты в 21:00–23:44 — тишина).
       if (opts.logFile !== false) {

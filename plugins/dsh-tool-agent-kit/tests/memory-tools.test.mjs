@@ -99,10 +99,10 @@ test("архив не вытесняет свежие заметки", async () 
 
 test("контракт хука: на шаге 1 ввод из payload.messages даёт инъекцию", async () => {
   const { MemoryStore } = await import("../lib/store.js");
-  const { installMemoryInjection } = await import("../lib/memory.js");
+  const { installMemoryInjection, readInjectionLog } = await import("../lib/memory.js");
   const { mkdtempSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
+  const { join, dirname } = await import("node:path");
   const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "hook-")), "notes.json"));
   store.add({ text: "роутер s4owner клиент" });
   let handler = null;
@@ -116,6 +116,11 @@ test("контракт хука: на шаге 1 ввод из payload.messages 
   const out = await handler(payload, async () => decision);
   assert.equal(out.messages.length, 1, "хук добавил сообщение памяти");
   assert.ok(JSON.stringify(out.messages[0]).includes("роутер"), "в сообщении есть заметка");
+  const st = readInjectionLog(join(dirname(store.file), "injection-log.json"));
+  assert.equal(st.length, 1, "состояние инъекции записано");
+  assert.equal(st[0].branch, "standard", "ветка — штатная");
+  assert.ok(String(st[0].keys[0]).startsWith("m1:"), "ключ id:updated");
+  assert.ok(st[0].size > 0 && st[0].cap > 0, "размер и кап записаны");
 });
 
 test("контракт хука: середина хода молчит, после компакции показывает заново", async () => {
