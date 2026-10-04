@@ -9,6 +9,18 @@ mkdir -p "$LOGDIR"
 BUG=""; [ $# -ge 1 ] && BUG="$1"
 LOG="$LOGDIR/deploy-tests.log"
 BAK="$LOGDIR/t.bak"
+# Статический барьер (no-undef + no-use-before-define): ловит замыкания на блочные переменные,
+# которые 123 зелёных теста пропустили (тихий ReferenceError 04.10.2026).
+# Инструмент лежит вне бандла (не уезжает в профиль): ~/maestro/tools/agent-kit-lint.
+ESLINT="$FILES/maestro/tools/agent-kit-lint/run.sh"
+if [ -f "$ESLINT" ]; then
+  if ! sh "$ESLINT" "$(pwd)" > "$LOGDIR/eslint.log" 2>&1; then
+    echo "  КРАСНЫЙ (eslint) — раскладка отменена, хеш не записан"; tail -20 "$LOGDIR/eslint.log"; exit 1
+  fi
+  echo "  eslint (no-undef, no-use-before-define): чисто"
+else
+  echo "  eslint недоступен ($ESLINT) — статический барьер ПРОПУЩЕН (это видно в отчёте)"
+fi
 if [ "$BUG" = "--selftest" ]; then cp tests/blob-store.test.mjs "$BAK"; printf '\ntest("сломанный",()=>{throw new Error("x")});\n' >> tests/blob-store.test.mjs; fi
 if ! timeout 300 node --test tests/*.test.mjs > "$LOG" 2>&1; then
   echo "  КРАСНЫЙ — раскладка отменена, хеш не записан"; tail -3 "$LOG"

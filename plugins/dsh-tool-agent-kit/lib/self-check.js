@@ -90,11 +90,19 @@ export function installSelfCheck(ctx, opts = {}) {
       log(line);
       return true;
     } catch (e) {
-      log("[agent-kit] самопроверка не удалась: " + ((e && e.message) || e));
+      const why = (e && e.message) || e;
+      // Канал self-check.log обязан оставаться живым и при падении: молча проглоченная ошибка
+      // уже стоила нескольких кругов (04.10.2026, ReferenceError в чтении журнала).
+      try {
+        const dir = join(files, "agent-memory");
+        mkdirSync(dir, { recursive: true });
+        appendFileSync(join(dir, "self-check.log"), new Date().toISOString() + " [agent-kit] самопроверка НЕ УДАЛАСЬ: " + why + "\n");
+      } catch { /* и это не критично */ }
+      log("[agent-kit] самопроверка не удалась: " + why);
       return false;
     }
   };
-  const t = setTimeout(run, opts.delayMs ?? 7000);
+  const t = setTimeout(run, opts.delayMs ?? (Number(process.env.DSH_SELFCHECK_DELAY_MS) || 7000));
   t.unref?.();
   return { run };
 }

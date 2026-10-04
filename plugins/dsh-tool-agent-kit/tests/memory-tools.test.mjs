@@ -126,7 +126,7 @@ test("контракт хука: на шаге 1 ввод из payload.messages 
   assert.ok(st[0].size > 0 && st[0].cap > 0, "размер и кап записаны");
 });
 
-test("реальная фикстура журнала: несовпавший запрос → via=fallback + qlen, ключи не теряются", async () => {
+test("реальная фикстура журнала: несовпавший запрос без закреплённых — НЕ дампим память", async () => {
   const { MemoryStore } = await import("../lib/store.js");
   const { installMemoryInjection, readInjectionLog, userTextOf } = await import("../lib/memory.js");
   const { REAL_TURN1_WITH_FILE, REAL_TURN34 } = await import("./support/journal-fixture.mjs");
@@ -137,19 +137,66 @@ test("реальная фикстура журнала: несовпавший �
   assert.equal(userTextOf(REAL_TURN34), "Перезагрузил", "текстовый блок прочитан");
   assert.equal(userTextOf(REAL_TURN1_WITH_FILE), "Добавить этот апи можно?", "file-блок проигнорирован");
   const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "real-")), "notes.json"));
-  store.add({ text: "роутер s4owner клиент" });
+  store.add({ text: "роутер s4owner клиент" }); // не закреплена
   let handler = null;
   const ctx = { on: (ev, fn) => { if (ev === "agent/pre-step") handler = fn; }, logger: { warn() {} } };
   const llm = { createUserMessage: (m) => m, boundContextSummary: (k) => k };
   installMemoryInjection(ctx, store, {}, { llm });
   const payload = { agent: { session: { id: "real" } }, turn: 34, step: 1, signal: { aborted: false }, messages: [REAL_TURN34] };
   const out = await handler(payload, async () => ({ kind: "enter", messages: [] }));
-  assert.equal(out.messages.length, 1, "fallback всё равно показывает заметки (дамп)");
+  assert.equal(out.messages.length, 0, "несовпавший запрос больше не дампит всю память");
+  assert.equal(readInjectionLog(join(dirname(store.file), "injection-log.json")).length, 0, "и не пишет состояние");
+});
+
+test("несовпавший запрос показывает ТОЛЬКО закреплённые + версию схемы", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { installMemoryInjection, readInjectionLog } = await import("../lib/memory.js");
+  const { REAL_TURN34 } = await import("./support/journal-fixture.mjs");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join, dirname } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "pin-")), "notes.json"));
+  store.add({ text: "обычная заметка про роутер" });
+  store.add({ text: "закреплённый факт", pinned: true });
+  let handler = null;
+  const ctx = { on: (ev, fn) => { if (ev === "agent/pre-step") handler = fn; }, logger: { warn() {} } };
+  installMemoryInjection(ctx, store, {}, { llm: { createUserMessage: (m) => m, boundContextSummary: (k) => k } });
+  const payload = { agent: { session: { id: "pin" } }, turn: 34, step: 1, signal: { aborted: false }, messages: [REAL_TURN34] };
+  const out = await handler(payload, async () => ({ kind: "enter", messages: [] }));
+  const txt = JSON.stringify(out.messages[0]);
+  assert.ok(txt.includes("закреплённый факт"), "закреплённая показана");
+  assert.ok(!txt.includes("обычная заметка"), "незакреплённая не дампится");
   const st = readInjectionLog(join(dirname(store.file), "injection-log.json"));
-  assert.equal(st.length, 1, "состояние записано");
-  assert.equal(st[0].via, "fallback", "запрос был, но не совпал — fallback");
+  assert.equal(st[0].via, "fallback", "запрос был, совпадений нет — fallback");
+  assert.equal(st[0].v, 1, "версия схемы файла записана");
   assert.equal(st[0].qlen, "Перезагрузил".length, "qlen показывает, что запрос НЕ пустой");
-  assert.ok(st[0].keys.length >= 1, "fallback сохраняет ключи, а не keys=[]");
+});
+
+test("короткая реплика после содержательного запроса берёт тему из истории реплик", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { installMemoryInjection, readInjectionLog } = await import("../lib/memory.js");
+  const { REAL_TURN34 } = await import("./support/journal-fixture.mjs");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join, dirname } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "ctx-")), "notes.json"));
+  store.add({ text: "роутер s4owner клиент" });
+  let pre = null, onEvent = null;
+  const ctx = { on: (ev, fn) => { if (ev === "agent/pre-step") pre = fn; else if (ev === "session/event") onEvent = fn; }, logger: { warn() {} } };
+  installMemoryInjection(ctx, store, {}, { llm: { createUserMessage: (m) => m, boundContextSummary: (k) => k } });
+  const session = { id: "ctx" };
+  // Предыдущая содержательная реплика — ровно та форма, что у реальных user/message (source.kind="user")
+  onEvent(session, { type: "user/message", data: { source: { kind: "user" }, content: [{ type: "text", text: "что по роутеру s4owner?" }] } });
+  // Наш собственный notice в историю запроса попадать не должен
+  onEvent(session, { type: "user/message", data: { source: { kind: "agent-kit-memory", form: "notice" }, content: [{ type: "text", text: "МУСОР-ИЗ-NOTICE" }] } });
+  const payload = { agent: { session }, step: 1, signal: { aborted: false }, messages: [REAL_TURN34] };
+  const out = await pre(payload, async () => ({ kind: "enter", messages: [] }));
+  const txt = JSON.stringify(out.messages[0]);
+  assert.ok(txt.includes("роутер s4owner"), "тема предыдущей реплики подхвачена");
+  assert.ok(!txt.includes("МУСОР-ИЗ-NOTICE"), "notice не попал в запрос");
+  const st = readInjectionLog(join(dirname(store.file), "injection-log.json"));
+  assert.equal(st[0].via, "query", "контекстный запрос нашёл тему");
+  assert.ok(st[0].qlen > "Перезагрузил".length, "qlen — длина составного запроса");
 });
 
 test("agent_memory(status) читает журнал инъекций на момент вызова", async () => {
@@ -159,11 +206,12 @@ test("agent_memory(status) читает журнал инъекций на мо�
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "st-")), "notes.json"));
-  store.add({ text: "заметка" });
+  store.add({ text: "СЕКРЕТ-ТЕКСТ-ЗАМЕТКИ" });
   const tool = memoryTool((x) => x, store);
   let res = await tool.execute({ action: "status" });
   assert.equal(res.ok, true);
   assert.ok(res.text.includes("инъекций не было"), "пока журнала нет — так и говорит");
+  assert.ok(!res.text.includes("СЕКРЕТ-ТЕКСТ-ЗАМЕТКИ"), "status не отдаёт текст заметок — только счётчики и поля");
   await recordInjection(injectionLogPath(store), { at: "2026-10-04T18:23:15.725Z", turn: 34, step: 1, branch: "standard", via: "fallback", qlen: 12, keys: ["m1:1"], size: 975, cap: 1800 });
   res = await tool.execute({ action: "status" });
   assert.ok(res.text.includes("последняя инъекция: 2026-10-04T18:23:15.725Z"), "видно время последней инъекции");

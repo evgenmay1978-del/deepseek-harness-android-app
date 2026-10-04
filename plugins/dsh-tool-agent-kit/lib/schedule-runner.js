@@ -28,6 +28,12 @@ import {
   markedText, splitMarker, queueId,
 } from "./schedule-queue.js";
 
+const fmt = (ms) => {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+};
+
 const DEFAULTS = {
   intervalMs: 30000,
   startupDelayMs: 8000,
@@ -242,9 +248,3 @@ export function installScheduleRunner(ctx, opts = {}, deps = {}) {
   interval.unref?.();
   return { tick, interval, timer, stateFile, queueFile, journal, armNearest, stop: () => { try { watchHandle?.close(); } catch { /* уже закрыт */ } clearInterval(interval); clearTimeout(timer); } };
 }
-
-const fmt = (ms) => {
-  const d = new Date(ms);
-  const p = (n) => String(n).padStart(2, "0");
-  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
-};
