@@ -194,6 +194,53 @@ test("длинная старая реплика не перетягивает �
   assert.equal(st[0].via, "query");
 });
 
+test("длинная реплика не съедает инъекцию: кап — от окна, не от хода", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { installMemoryInjection, readInjectionLog } = await import("../lib/memory.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join, dirname } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "long-")), "notes.json"));
+  store.add({ text: "роутер s4owner клиент" });
+  let handler = null;
+  const ctx = { on: (ev, fn) => { if (ev === "agent/pre-step") handler = fn; }, logger: { warn() {} } };
+  installMemoryInjection(ctx, store, {}, { llm: { createUserMessage: (m) => m, boundContextSummary: (k) => k } });
+  // Тема — в СВЕЖЕЙ части (кап запроса режет начало), длина заметно больше 2000 символов.
+  const long = "контекст ".repeat(400) + " роутер s4owner";
+  const payload = { agent: { session: { id: "long" } }, turn: 1, step: 1, signal: { aborted: false }, messages: [{ role: "user", content: [{ type: "text", text: long }] }] };
+  const out = await handler(payload, async () => ({ kind: "enter", messages: [] }));
+  assert.equal(out.messages.length, 1, "на длинной реплике инъекция всё ещё проходит");
+  const st = readInjectionLog(join(dirname(store.file), "injection-log.json"));
+  assert.ok(st[0].cap >= 507, "кап не режется размером хода: " + st[0].cap);
+});
+
+test("после рестарта тема берётся из session.deriveMessages()", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { installMemoryInjection } = await import("../lib/memory.js");
+  const { REAL_TURN34 } = await import("./support/journal-fixture.mjs");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "seed-")), "notes.json"));
+  store.add({ text: "роутер s4owner клиент" });
+  let pre = null;
+  const ctx = { on: (ev, fn) => { if (ev === "agent/pre-step") pre = fn; }, logger: { warn() {} } };
+  installMemoryInjection(ctx, store, {}, { llm: { createUserMessage: (m) => m, boundContextSummary: (k) => k } });
+  const session = {
+    id: "seed",
+    deriveMessages: () => [
+      { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "что по роутеру s4owner?" }] },
+      { role: "user", source: { kind: "agent-kit-memory", form: "notice" }, content: [{ type: "text", text: "МУСОР-ИЗ-NOTICE" }] },
+      { ...REAL_TURN34, source: { kind: "user" } }
+    ]
+  };
+  const payload = { agent: { session }, step: 1, signal: { aborted: false }, messages: [REAL_TURN34] };
+  const out = await pre(payload, async () => ({ kind: "enter", messages: [] }));
+  const txt = JSON.stringify(out.messages[0]);
+  assert.ok(txt.includes("роутер s4owner"), "тема прошлой сессии подхвачена после рестарта");
+  assert.ok(!txt.includes("МУСОР-ИЗ-NOTICE"), "наши notice в историю не попадают");
+});
+
 test("короткая реплика после содержательного запроса берёт тему из истории реплик", async () => {
   const { MemoryStore } = await import("../lib/store.js");
   const { installMemoryInjection, readInjectionLog } = await import("../lib/memory.js");

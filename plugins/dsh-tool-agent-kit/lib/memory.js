@@ -213,7 +213,8 @@ export function installMemoryInjection(ctx, store, opts = {}, deps = {}) {
       if (event.type === "compaction/end" || event.type === "compaction/summary") stale.add(session);
       if (event.type === "user/message" && event.data && event.data.source && event.data.source.kind === "user") {
         const t = userTextOf(event.data).trim();
-        if (t) recent.set(session, [...(recent.get(session) || []), t].slice(-4));
+        const list = recent.get(session) || [];
+        if (t && list[list.length - 1] !== t) recent.set(session, [...list, t].slice(-4));
       }
     } catch { /* наблюдение не должно ронять ход */ }
   });
@@ -235,13 +236,27 @@ export function installMemoryInjection(ctx, store, opts = {}, deps = {}) {
       const utext = userTextOf((stepMessages || []).find((x) => x && x.role === "user")).trim();
       // Запрос = последние реплики пользователя (до 3). Текущую не дублируем: событие user/message
       // могло прийти до pre-step и уже лежать в recent. Свежие важнее: длинный хвост режем С НАЧАЛА.
+      // После рестарта process-local recent пуст, а история сессии жива. Засеваем прошлые
+      // реплики из session.deriveMessages(): иначе первый ход после рестарта теряет тему
+      // (живой случай 04.10.2026: «Перезапустил» не совпал ни с чем, записи не появилось).
+      if (!recent.has(session)) {
+        let prior = [];
+        try {
+          if (session && typeof session.deriveMessages === "function") {
+            prior = session.deriveMessages()
+              .filter((m) => m && m.role === "user" && m.source && m.source.kind === "user")
+              .map((m) => userTextOf(m).trim()).filter(Boolean);
+          }
+        } catch { /* не критично: останемся без истории */ }
+        recent.set(session, prior.slice(-4));
+      }
       const hist = recent.get(session) || [];
       const joined = (utext && hist[hist.length - 1] !== utext ? [...hist, utext] : hist).slice(-3).join(" ").trim();
       const query = joined.length > QUERY_MAX_CHARS ? joined.slice(-QUERY_MAX_CHARS) : joined;
-      // Квота: не более 2% контекста хода (и не больше maxChars)
-      const pool = (decision.messages && decision.messages.length ? decision.messages : stepMessages) || [];
-      const totalChars = pool.reduce((n, x) => n + JSON.stringify(x).length, 0);
-      const capChars = totalChars > 2000 ? Math.min(maxChars, Math.floor(totalChars * 0.02)) : maxChars;
+      // Кап — доля ОКНА МОДЕЛИ (2%), а не размера реплики. Окно 1M → 20k, поэтому реальный
+      // потолок — maxChars. Прежняя формула (2% от ХОДА) на длинной реплике давала 58 символов
+      // и молча съедала инъекцию (живой случай 04.10.2026: cap 58 при заметке 507).
+      const capChars = opts.contextWindowChars ? Math.min(maxChars, Math.floor(opts.contextWindowChars * 0.02)) : maxChars;
       // Политика без совпадений (ревью 04.10.2026):
       //  - запрос дал совпадения → query;
       //  - запроса нет (qlen=0) → закреплённые + немного по использованию;
