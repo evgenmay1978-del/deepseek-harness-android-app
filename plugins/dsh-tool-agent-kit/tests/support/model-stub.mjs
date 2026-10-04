@@ -5,7 +5,8 @@
  *
  * env:
  *   STUB_PORT  — порт (по умолчанию 3099)
- *   STUB_MODE  — ok | retry-3 | fail-always | quota-402 | stream-break
+ *   STUB_MODE  — ok | retry-3 | fail-always | quota-402 | stream-break | slow | rate-limit-429
+ *   STUB_DELAY_MS — задержка для slow (по умолчанию 120000)
  *   STUB_LOG   — путь jsonl (по умолчанию stub-requests.jsonl)
  *
  * Сценарии:
@@ -34,6 +35,14 @@ createServer((req, res) => {
   req.on("end", () => {
     n++;
     try { appendFileSync(LOG, JSON.stringify({ n, url: req.url, mode: MODE, body: raw.slice(0, 200000) }) + "\n"); } catch { /* лог не критичен */ }
+    if (MODE === "rate-limit-429") {
+      res.writeHead(429, { "content-type": "application/json", "retry-after": "1" });
+      return res.end(JSON.stringify({ error: { message: "rate limited", type: "rate_limit_error" } }));
+    }
+    if (MODE === "slow") {
+      const ms = Number(process.env.STUB_DELAY_MS || 120000);
+      return setTimeout(() => { try { res.end(JSON.stringify(completion("late"))); } catch { /* клиент ушёл */ } }, ms);
+    }
     if (MODE === "quota-402") {
       res.writeHead(402, { "content-type": "application/json" });
       return res.end(JSON.stringify({ error: { message: "Insufficient Balance", code: "QUOTA" } }));

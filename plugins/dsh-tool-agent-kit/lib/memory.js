@@ -8,7 +8,7 @@
  */
 import { makeLlmGetter, noticeMessage } from "./llm.js";
 import { formatItem } from "./store.js";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const HEADER =
@@ -103,13 +103,20 @@ export function readInjectionLog(file) {
   try { const a = JSON.parse(readFileSync(file, "utf8")); return Array.isArray(a) ? a : []; } catch { return []; }
 }
 
+// Записи сериализуем: два хода подряд или параллельные субагенты пишут в один файл.
+let writeChain = Promise.resolve();
 export function recordInjection(file, rec) {
-  try {
-    const arr = readInjectionLog(file);
-    arr.push(rec);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify(arr.slice(-20), null, 1), "utf8");
-  } catch { /* наблюдаемость не должна ронять ход */ }
+  writeChain = writeChain.then(() => {
+    try {
+      const arr = readInjectionLog(file);
+      arr.push(rec);
+      mkdirSync(dirname(file), { recursive: true });
+      const tmp = file + ".tmp";
+      writeFileSync(tmp, JSON.stringify(arr.slice(-20), null, 1), "utf8");
+      renameSync(tmp, file); // атомарно: обрыв не оставит битый JSON
+    } catch { /* наблюдаемость не должна ронять ход */ }
+  }).catch(() => {});
+  return writeChain;
 }
 
 /**
