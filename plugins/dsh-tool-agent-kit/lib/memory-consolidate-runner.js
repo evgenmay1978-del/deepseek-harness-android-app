@@ -7,7 +7,8 @@
  * Правила: по умолчанию только отчёт (dryRun), человеческие каталоги не трогаются вообще,
  * отчёт пишется в plugin-logs/.
  */
-import { writeFileSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { scan, plan, consolidate } from "./memory-consolidate.js";
 
 export function installMemoryConsolidate(ctx, opts = {}) {
@@ -36,7 +37,7 @@ export function installMemoryConsolidate(ctx, opts = {}) {
       perDir.push(entry);
     }
     last = { at: startedAt, dryRun, dirs: perDir };
-    try { if (reportPath) writeFileSync(reportPath, JSON.stringify(last, null, 2), "utf8"); } catch { /* отчёт не критичен */ }
+    try { if (reportPath) { mkdirSync(dirname(reportPath), { recursive: true }); writeFileSync(reportPath, JSON.stringify(last, null, 2), "utf8"); } } catch { /* отчёт не критичен */ }
     log("[agent-kit] консолидация памяти: " + JSON.stringify(perDir.map((x) => (x.dir.split("/").pop() || x.dir) + ":" + x.mode + "(" + x.groups + ")")));
     return last;
   };

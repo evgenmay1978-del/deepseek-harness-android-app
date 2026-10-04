@@ -20,6 +20,7 @@ grep -E '^ℹ (tests|pass|fail)' "$LOG"
 TREE=$(cat index.js lib/*.js | sha256sum | cut -c1-12)
 echo "дерево плагина: $TREE"
 for P in web headless; do
+  [ -d "$FILES/payload/dshhome/profiles/$P" ] || { echo "  $P: профиля нет — пропуск"; continue; }
   D="$FILES/payload/dshhome/profiles/$P/node_modules/dsh-tool-agent-kit"
   cp index.js "$D/" && cp lib/*.js "$D/lib/" || exit 1
   T=$(cat "$D/index.js" "$D"/lib/*.js | sha256sum | cut -c1-12)

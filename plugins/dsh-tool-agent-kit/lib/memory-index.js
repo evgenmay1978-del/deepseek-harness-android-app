@@ -19,6 +19,17 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+/** Все .md в каталоге и подкаталогах, кроме скрытых (архив памяти раньше не попадал в индекс). */
+export function walkMd(dir, out = [], root = dir) {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name.startsWith(".")) continue;
+    const p = join(dir, e.name);
+    if (e.isDirectory()) walkMd(p, out, root);
+    else if (e.name.endsWith(".md")) out.push(p.slice(root.length + 1));
+  }
+  return out;
+}
+
 export function parseNote(text) {
   const raw = String(text ?? "");
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(raw);
@@ -77,7 +88,7 @@ export function rebuildAll(db, dirs, deps = {}, { allowEmpty = false, minRatio =
 
 function buildOnce(db, dirs, deps, { allowEmpty, minRatio, log, humanDirs = [] }) {
   const verify = deps.verifySignature;   // нет верификатора — всё агентское (fail-closed)
-  const list = deps.list || ((d) => readdirSync(d).filter((f) => f.endsWith(".md")));
+  const list = deps.list || walkMd;
   const read = deps.read || ((p) => readFileSync(p, "utf8"));
   const items = [];
   for (const d of dirs || []) {
@@ -208,7 +219,7 @@ function buildOnce(db, dirs, deps, { allowEmpty, minRatio, log, humanDirs = [] }
 
 /** Пересборка индекса из каталога markdown-файлов. Возвращает число записей. */
 export function rebuild(db, dir, deps = {}) {
-  const list = deps.list || ((d) => readdirSync(d).filter((f) => f.endsWith(".md")));
+  const list = deps.list || walkMd;
   const read = deps.read || ((p) => readFileSync(p, "utf8"));
   // ВАЖНО: сначала получаем список файлов и только потом чистим таблицу.
   // Иначе отсутствующий каталог (readdirSync бросает) стирал бы уже собранный индекс из предыдущего каталога.

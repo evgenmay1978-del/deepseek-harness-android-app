@@ -48,6 +48,15 @@ test("агентский каталог консолидируется при dr
   r.stop();
 });
 
+test("каталог отчёта создаётся, отчёт не теряется", () => {
+  const dir = setup();
+  const nested = join(dir, "logs", "sub", "report.json");
+  const r = installMemoryConsolidate(null, { dirs: [dir], reportPath: nested });
+  r.runOnce();
+  assert.ok(readFileSync(nested, "utf8").includes("dryRun"), "отчёт записан в созданный каталог");
+  r.stop();
+});
+
 test("консолидация запускается таймером движка и корректно останавливается", () => {
   const dir = setup();
   const r = installMemoryConsolidate(null, { dirs: [dir], intervalMs: 50 });

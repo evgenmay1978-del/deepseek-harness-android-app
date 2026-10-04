@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseNote, openIndex, rebuild, search, supersededIds } from "../lib/memory-index.js";
+import { parseNote, openIndex, rebuild, search, supersededIds, walkMd } from "../lib/memory-index.js";
 
 const NOTES = {
   "a.md": "---\nid: m1\nkey: proj.build_cmd\ntags: [build]\nupdated: 2026-09-01\n---\nсборка проекта делается командой gradle assemble",
@@ -39,6 +39,22 @@ test("свежесть влияет на порядок", () => {
   rebuild(db, "/notes", { list: () => Object.keys(NOTES), read: (p) => NOTES[p.split("/").pop()] });
   const hits = search(db, "сборка", { now: Date.parse("2026-10-01"), limit: 5, includeSuperseded: true });
   assert.equal(hits[0].id, "m2", "более свежая запись выше при близкой релевантности");
+});
+
+test("вложенные каталоги индексируются (archive/ раньше был невидим)", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = mkdtempSync(join(tmpdir(), "rec-"));
+  mkdirSync(join(root, "archive"));
+  writeFileSync(join(root, "top.md"), "верхняя заметка про роутер");
+  writeFileSync(join(root, "archive", "deep.md"), "архивная заметка про роутер");
+  assert.deepEqual(walkMd(root).sort(), ["archive/deep.md", "top.md"]);
+  const { rebuildAll } = await import("../lib/memory-index.js");
+  const db = openIndex();
+  const r = rebuildAll(db, [root]);
+  assert.equal(r.inserted, 2, "обе заметки в индексе");
+  assert.equal(search(db, "роутер", { now: Date.now(), limit: 5 }).length, 2, "обе находятся поиском");
 });
 
 test("обвал индекса: пустая сборка не стирает рабочий индекс без явного разрешения", async () => {
