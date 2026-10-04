@@ -5,7 +5,9 @@
  *     -> out/tokens.css   (веб-UI DSH: переопределение --dsw-alias-* на :root и [data-ds-dark-theme])
  *     -> out/console.json (нативная консоль: theme-pack schema 1, валидируется theme_pack_check.py)
  * Плюс детерминированная проверка WCAG-контраста на парах «текст/фон» для обеих тем.
- * !important не генерируется: сначала проверяем, выигрывает ли stylesheet по порядку (по ТЗ).
+ * !important СТАВИТСЯ на все --dsw-alias-*: родная палитра (dsh-client-ui-theme/lib/client.js)
+ * вставляется рантайм-<style> ПОСЛЕ <link> из inject.sh; при равной специфичности поздний побеждает,
+ * поэтому без !important не перебить. То же подтверждает mobile.css (бренд перебит через !important).
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -15,6 +17,22 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT = join(HERE, "out");
 const T = JSON.parse(readFileSync(join(HERE, "tokens.json"), "utf8"));
 const v = (t) => t.$value;
+
+// Сверка версии схемы с устройством: генератор собран под meta.consoleSchema,
+// фактическую константу читаем из console.schema.json на устройстве.
+const SCHEMA_PATH = process.env.CONSOLE_SCHEMA || "/storage/emulated/0/DeepSeekHarness/console/console.schema.json";
+try {
+  const s = JSON.parse(readFileSync(SCHEMA_PATH, "utf8"));
+  const actual = s?.properties?.schema?.const;
+  if (actual !== T.meta.consoleSchema) {
+    console.error("SCHEMA MISMATCH: на устройстве " + actual + ", генератор собран под " + T.meta.consoleSchema);
+    process.exit(1);
+  }
+  console.log("schema: устройство=" + actual + " == генератор=" + T.meta.consoleSchema + " ok");
+} catch (e) {
+  console.error("SCHEMA CHECK FAILED: " + SCHEMA_PATH + " — " + (e?.message || e));
+  process.exit(1);
+}
 
 // наш токен -> имена --dsw-alias-* в веб-UI
 const WEB_MAP = {
@@ -61,12 +79,12 @@ for (const scheme of ["light", "dark"]) {
   const decls = [];
   for (const [key, names] of Object.entries(WEB_MAP)) {
     const color = v(c[key]);
-    for (const n of names) decls.push("  --dsw-alias-" + n + ": " + color + ";");
+    for (const n of names) decls.push("  --dsw-alias-" + n + ": " + color + " !important;");
     if (key === "accent") {
-      decls.push("  --dsw-alias-brand-primary-hover: " + shade(color, 0.14) + ";");
-      decls.push("  --dsw-alias-brand-primary-active: " + shade(color, -0.14) + ";");
-      decls.push("  --dsw-alias-brand-primary-new-colorprimary-new-color: " + color + ";");
-      decls.push("  --dsw-alias-button-primary-hover: " + shade(color, 0.14) + ";");
+      decls.push("  --dsw-alias-brand-primary-hover: " + shade(color, 0.14) + " !important;");
+      decls.push("  --dsw-alias-brand-primary-active: " + shade(color, -0.14) + " !important;");
+      decls.push("  --dsw-alias-brand-primary-new-colorprimary-new-color: " + color + " !important;");
+      decls.push("  --dsw-alias-button-primary-hover: " + shade(color, 0.14) + " !important;");
     }
   }
   blocks.push(sel + " {\n" + decls.join("\n") + "\n}");
