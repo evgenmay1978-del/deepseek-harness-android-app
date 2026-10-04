@@ -121,14 +121,31 @@ export function installMemoryInjection(ctx, store, opts = {}, deps = {}) {
       if (!refresh && shown.get(session) === v) return decision;
       const um = decision.messages.find((x) => x && x.role === "user");
       const utext = um ? (typeof um.content === "string" ? um.content : (Array.isArray(um.content) ? um.content.map((c) => (c && c.text) || "").join(" ") : "")) : "";
+      // Квота: не более 2% контекста хода (и не больше maxChars)
+      const totalChars = decision.messages.reduce((n, x) => n + JSON.stringify(x).length, 0);
+      const capChars = Math.min(maxChars, Math.max(300, Math.floor(totalChars * 0.02)));
       let body = "";
+      let injectedIds = [];
       if (utext.trim()) {
         const hits = store.search(utext, 5);
         const pinned = store.list(50).filter((i) => i.pinned);
         const merged = [...new Map([...pinned, ...hits].map((i) => [i.id, i])).values()].slice(0, maxItems);
-        body = merged.map(formatItem).join("\n");
+        const lines = [];
+        let chars = 0;
+        for (const it of merged) {
+          const l = formatItem(it);
+          if (chars + l.length > capChars) break;
+          lines.push(l);
+          chars += l.length + 1;
+          injectedIds.push(it.id);
+        }
+        body = lines.join("\n");
       }
-      if (!body) body = store.render(maxItems, maxChars);
+      if (!body) { body = store.render(maxItems, capChars); injectedIds = []; }
+      if (injectedIds.length) {
+        try { store.markUsed(injectedIds); } catch { /* не критично */ }
+        log("[agent-kit] memory injected: " + injectedIds.join(",") + " (" + injectedIds.length + " notes, " + capChars + " cap)");
+      }
       stale.delete(session);
       if (!body) { shown.set(session, v); return decision; }
       const llm = await getLlm();

@@ -56,6 +56,48 @@ test("сквозной тест через installMemoryIndex: поиск нах
   mi.stop();
 });
 
+test("IDF-ранжирование: редкий термин выше общего", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "idf-")), "notes.json"));
+  store.add({ text: "роутер VPN работает" });
+  store.add({ text: "роутер wifi настроен" });
+  store.add({ text: "роутер s4owner клиент" });
+  const hits = store.search("s4owner роутер", 3);
+  assert.equal(hits[0].text, "роутер s4owner клиент", "редкий термин s4owner выше общего роутер");
+});
+
+test("евикция по использованию: использованная заметка живёт дольше", async () => {
+  const { MemoryStore, LIMITS } = await import("../lib/store.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "evic-")), "notes.json"));
+  for (let i = 0; i < LIMITS.maxItems; i++) store.add({ text: "note " + i });
+  store.markUsed(["m1", "m2"]);
+  store.add({ text: "new note" });
+  const ids = store.list(200).map(i => i.id);
+  assert.ok(ids.includes("m1"), "использованная заметка выжила");
+  assert.ok(ids.includes("m2"), "вторая использованная выжила");
+});
+
+test("markUsed: счётчик сохраняется без смены версии", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const f = join(mkdtempSync(join(tmpdir(), "mu-")), "notes.json");
+  const store = new MemoryStore(f);
+  store.add({ text: "note 1" });
+  const v = store.version();
+  store.markUsed(["m1"]);
+  assert.equal(store.version(), v, "версия не изменилась");
+  const store2 = new MemoryStore(f);
+  assert.equal(store2.list(10)[0].used, 1, "счётчик сохранён на диске");
+});
+
 test("заметки agent_memory видны в memory_search (зеркало markdown)", async () => {
   const { MemoryStore } = await import("../lib/store.js");
   const { installMemoryIndex } = await import("../lib/memory-tools.js");

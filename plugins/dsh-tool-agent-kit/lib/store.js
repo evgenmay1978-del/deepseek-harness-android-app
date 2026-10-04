@@ -38,14 +38,30 @@ export class MemoryStore {
     return (this.data = data);
   }
 
-  #save() {
+  #persist(skipMirror = false) {
     const d = this.#load();
-    d.version += 1;
     mkdirSync(dirname(this.file), { recursive: true });
     const tmp = this.file + ".tmp";
     writeFileSync(tmp, JSON.stringify(d), "utf8");
     renameSync(tmp, this.file);
-    this.#mirror();
+    if (!skipMirror) this.#mirror();
+  }
+
+  #save() {
+    const d = this.#load();
+    d.version += 1;
+    this.#persist();
+  }
+
+  /** Отметить использование заметок (евикция по редкости). Версия не меняется. */
+  markUsed(ids) {
+    const d = this.#load();
+    const set = new Set(ids.map(String));
+    let changed = false;
+    for (const it of d.items) {
+      if (set.has(it.id)) { it.used = (it.used || 0) + 1; changed = true; }
+    }
+    if (changed) this.#persist(true);
   }
 
   /** Зеркало markdown: заметки agent_memory видны memory_search (walkMd индексирует подкаталоги). */
@@ -84,7 +100,7 @@ export class MemoryStore {
       return { ok: true, id: dup.id, duplicate: true };
     }
     if (d.items.length >= LIMITS.maxItems) {
-      const victim = [...d.items].filter((i) => !i.pinned).sort((a, b) => a.updated - b.updated)[0];
+      const victim = [...d.items].filter((i) => !i.pinned).sort((a, b) => (a.used || 0) - (b.used || 0) || a.updated - b.updated)[0];
       if (!victim) return { ok: false, error: "память заполнена (" + LIMITS.maxItems + "), все заметки закреплены — удалите лишние" };
       d.items.splice(d.items.indexOf(victim), 1);
     }
@@ -122,11 +138,22 @@ export class MemoryStore {
   search(query, limit = 10) {
     const q = tokens(query);
     if (q.length === 0) return [];
+    const items = this.#load().items;
+    const N = items.length || 1;
+    const docs = items.map((it) => norm(it.text + " " + it.tags));
+    const dfMap = new Map();
+    for (const t of q) dfMap.set(t, docs.reduce((n, d) => n + (d.includes(t) ? 1 : 0), 0));
     const scored = [];
-    for (const it of this.#load().items) {
-      const hay = norm(it.text + " " + it.tags);
-      const score = q.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0);
-      if (score > 0) scored.push({ it, score });
+    for (let idx = 0; idx < items.length; idx++) {
+      const hay = docs[idx];
+      let score = 0;
+      for (const t of q) {
+        if (!hay.includes(t)) continue;
+        const idf = Math.log((N + 1) / ((dfMap.get(t) || 0) + 1)) + 1;
+        const lenPenalty = 1 / (1 + Math.log(1 + hay.length / 80));
+        score += idf * lenPenalty;
+      }
+      if (score > 0) scored.push({ it: items[idx], score });
     }
     scored.sort((a, b) => (b.score - a.score) || (b.it.pinned - a.it.pinned) || (b.it.updated - a.it.updated));
     return scored.slice(0, Math.max(1, limit)).map((x) => x.it);
