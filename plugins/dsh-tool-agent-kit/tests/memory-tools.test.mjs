@@ -56,6 +56,47 @@ test("сквозной тест через installMemoryIndex: поиск нах
   mi.stop();
 });
 
+test("русская морфология: «роутера» находится по «роутер»", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "morph-")), "notes.json"));
+  store.add({ text: "пароль от роутера s4owner" });
+  assert.ok(store.search("роутер", 5).length > 0, "«роутер» находит «роутера»");
+  assert.ok(store.search("роутеров", 5).length > 0, "«роутеров» тоже");
+});
+
+test("origin: недоверенный источник помечается в выводе", async () => {
+  const { MemoryStore, formatItem } = await import("../lib/store.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "origin-")), "notes.json"));
+  store.add({ text: "факт из веба", origin: "web" });
+  store.add({ text: "факт от пользователя", origin: "user" });
+  const web = store.list(10).find(i => i.origin === "web");
+  const user = store.list(10).find(i => i.origin === "user");
+  assert.ok(formatItem(web).includes("⚠web"), "веб-заметка помечена");
+  assert.ok(!formatItem(user).includes("⚠"), "пользовательская не помечена");
+});
+
+test("архив не вытесняет свежие заметки", async () => {
+  const { installMemoryIndex } = await import("../lib/memory-tools.js");
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = mkdtempSync(join(tmpdir(), "arch-"));
+  mkdirSync(join(root, "archive"), { recursive: true });
+  writeFileSync(join(root, "archive", "old.md"), "---\nupdated: 2026-01-01\n---\nуникальное слово zzarchword", "utf8");
+  writeFileSync(join(root, "fresh.md"), "---\nupdated: 2026-10-04\n---\nуникальное слово zzarchword", "utf8");
+  const mi = installMemoryIndex(null, { dirs: [root], registerTool: false });
+  const hits = mi.search("zzarchword", { limit: 5 });
+  assert.ok(hits.length >= 2, "оба файла найдены");
+  assert.ok(!hits[0].id.startsWith("archive/"), "свежая выше архивной");
+  mi.stop();
+});
+
 test("IDF-ранжирование: редкий термин выше общего", async () => {
   const { MemoryStore } = await import("../lib/store.js");
   const { mkdtempSync } = await import("node:fs");

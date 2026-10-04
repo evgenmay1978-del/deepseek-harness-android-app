@@ -254,7 +254,9 @@ export function search(db, query, { limit = 5, now = 0, includeSuperseded = fals
   const scored = rows.filter((r) => !dead.has(r.id)).map((r) => {
     const t = Date.parse(r.updated || "");
     const fresh = Number.isFinite(t) && now > 0 ? Math.max(0, 1 - (now - t) / (90 * day)) : 0;
-    return { ...r, rank: -Number(r.score) + fresh * 0.5 };
+    // Архив — история: половинный вес, чтобы не вытеснял свежие заметки
+    const archived = String(r.id).startsWith("archive/");
+    return { ...r, rank: (-Number(r.score) + fresh * 0.5) * (archived ? 0.5 : 1) };
   });
   return scored.sort((a, b) => b.rank - a.rank).slice(0, limit);
 }

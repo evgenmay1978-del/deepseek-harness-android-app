@@ -13,7 +13,8 @@ import { dirname, join } from "node:path";
 export const LIMITS = { maxItems: 200, maxText: 500, maxTagsLen: 80 };
 
 const norm = (s) => String(s).toLowerCase().replace(/\s+/g, " ").trim();
-const tokens = (s) => norm(s).split(/[^\p{L}\p{N}_]+/u).filter((t) => t.length >= 2);
+/** Токены запроса с усечением до 6 символов: «роутера»/«роутер» сходятся (морфология без библиотек). */
+const tokens = (s) => norm(s).split(/[^\p{L}\p{N}_]+/u).filter((t) => t.length >= 2).map((t) => t.slice(0, 6));
 
 export class MemoryStore {
   constructor(file, opts = {}) {
@@ -84,7 +85,7 @@ export class MemoryStore {
   version() { return this.#load().version; }
   count() { return this.#load().items.length; }
 
-  add({ text, tags = "", pinned = false }) {
+  add({ text, tags = "", pinned = false, origin = "agent" }) {
     const t = String(text ?? "").trim();
     if (!t) return { ok: false, error: "text пустой" };
     if (t.length > LIMITS.maxText) return { ok: false, error: "text длиннее " + LIMITS.maxText + " символов (сейчас " + t.length + ") — сократите или разбейте на несколько заметок" };
@@ -100,13 +101,16 @@ export class MemoryStore {
       return { ok: true, id: dup.id, duplicate: true };
     }
     if (d.items.length >= LIMITS.maxItems) {
-      const victim = [...d.items].filter((i) => !i.pinned).sort((a, b) => (a.used || 0) - (b.used || 0) || a.updated - b.updated)[0];
+      const nowMs = this.now();
+      // Затухание: свежее использование весит больше давнего
+      const eff = (i) => (i.used || 0) / (1 + Math.max(0, nowMs - (i.updated || i.created || nowMs)) / (30 * 86400e3));
+      const victim = [...d.items].filter((i) => !i.pinned).sort((a, b) => eff(a) - eff(b) || a.updated - b.updated)[0];
       if (!victim) return { ok: false, error: "память заполнена (" + LIMITS.maxItems + "), все заметки закреплены — удалите лишние" };
       d.items.splice(d.items.indexOf(victim), 1);
     }
     const id = "m" + d.next++;
     const ts = this.now();
-    d.items.push({ id, text: t, tags: tg, pinned: pinned === true, created: ts, updated: ts });
+    d.items.push({ id, text: t, tags: tg, pinned: pinned === true, origin: String(origin || "agent"), created: ts, updated: ts });
     this.#save();
     return { ok: true, id };
   }
@@ -176,4 +180,5 @@ export class MemoryStore {
   }
 }
 
-export const formatItem = (it) => "[" + it.id + "]" + (it.pinned ? " 📌" : "") + " " + it.text + (it.tags ? "  #" + it.tags.split(",").join(" #") : "");
+const UNTRUSTED_ORIGINS = new Set(["web", "screen", "tool", "tool_result", "external"]);
+export const formatItem = (it) => "[" + it.id + "]" + (it.pinned ? " 📌" : "") + (UNTRUSTED_ORIGINS.has(it.origin) ? " ⚠" + it.origin : "") + " " + it.text + (it.tags ? "  #" + it.tags.split(",").join(" #") : "");
