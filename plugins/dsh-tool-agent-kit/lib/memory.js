@@ -124,10 +124,11 @@ export function recordInjection(file, rec) {
  * Дельта по набору id, а не по версии памяти: иначе на следующем ходу с другим запросом
  * релевантные заметки не придут (баг «один показ на версию»).
  */
-export function selectInjection(store, { query = "", shown = new Set(), maxItems = 15, capChars = 1800 } = {}) {
+export function selectInjection(store, { query = "", shown = new Set(), maxItems = 15, capChars = 1800, all = false } = {}) {
   const pinned = store.list(50).filter((i) => i.pinned);
   const hits = String(query).trim() ? store.search(String(query), 5) : [];
-  const merged = [...new Map([...pinned, ...hits].map((i) => [i.id, i])).values()];
+  const base = all ? store.list(maxItems) : [...pinned, ...hits];
+  const merged = [...new Map(base.map((i) => [i.id, i])).values()];
   const keyOf = (i) => i.id + ":" + (i.updated || 0);
   const fresh = merged.filter((i) => !shown.has(keyOf(i)));
   const lines = [];
@@ -184,10 +185,12 @@ export function installMemoryInjection(ctx, store, opts = {}, deps = {}) {
       const pool = (decision.messages && decision.messages.length ? decision.messages : stepMessages) || [];
       const totalChars = pool.reduce((n, x) => n + JSON.stringify(x).length, 0);
       const capChars = totalChars > 2000 ? Math.min(maxChars, Math.floor(totalChars * 0.02)) : maxChars;
-      const sel = selectInjection(store, { query: utext, shown: prev, maxItems, capChars });
+      // Раньше fallback звал store.render и терял ключи (keys=[] в состоянии).
+      // Теперь fallback — тот же selectInjection с all=true: и дельта, и ключи на месте.
+      let sel = selectInjection(store, { query: utext, shown: prev, maxItems, capChars });
+      if (!sel.text) sel = selectInjection(store, { query: "", shown: prev, maxItems, capChars, all: true });
       let body = sel.text;
       let injectedIds = sel.ids;
-      if (!body) { body = store.render(maxItems, capChars); injectedIds = new Set(); }
       // Инъекция — это вещание, а не использование: used НЕ трогаем (иначе петля самоподтверждения).
       if (body) {
         recordInjection(statePath, {
