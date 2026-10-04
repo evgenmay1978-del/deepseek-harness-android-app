@@ -101,7 +101,8 @@ export function selectInjection(store, { query = "", shown = new Set(), maxItems
   const pinned = store.list(50).filter((i) => i.pinned);
   const hits = String(query).trim() ? store.search(String(query), 5) : [];
   const merged = [...new Map([...pinned, ...hits].map((i) => [i.id, i])).values()];
-  const fresh = merged.filter((i) => !shown.has(i.id));
+  const keyOf = (i) => i.id + ":" + (i.updated || 0);
+  const fresh = merged.filter((i) => !shown.has(keyOf(i)));
   const lines = [];
   const ids = new Set();
   let chars = 0;
@@ -110,7 +111,7 @@ export function selectInjection(store, { query = "", shown = new Set(), maxItems
     if (chars + l.length > capChars) break;
     lines.push(l);
     chars += l.length + 1;
-    ids.add(it.id);
+    ids.add(keyOf(it));
   }
   return { text: lines.join("\n"), ids };
 }
@@ -138,18 +139,23 @@ export function installMemoryInjection(ctx, store, opts = {}, deps = {}) {
   ctx.on("agent/pre-step", async (payload, next) => {
     const decision = await next();
     try {
-      const { agent, step, signal } = payload;
+      const { agent, step, signal, messages: stepMessages } = payload;
       if (decision.kind === "reject" || signal?.aborted) return decision;
       const session = agent.session;
       const refresh = stale.has(session); // после компакции показываем даже в середине хода
-      if (!refresh && (step !== 1 || decision.messages.length === 0)) return decision; // иначе только начало хода с вводом
+      // БАГ (исправлено): гейт был step !== 1 || decision.messages.length === 0.
+      // decision.messages это то, что добавили ДРУГИЕ хуки; на шаге 1 оно пусто, поэтому
+      // инъекция не срабатывала ни разу. Ввод хода лежит в payload.messages
+      // (тип: agent, messages: UserMessage[], turn, step, signal).
+      if (!refresh && step !== 1) return decision;
       const v = store.version();
       const prev = refresh ? new Set() : (shown.get(session) || new Set());
-      const um = decision.messages.find((x) => x && x.role === "user");
+      const um = (stepMessages || []).find((x) => x && x.role === "user");
       const utext = um ? (typeof um.content === "string" ? um.content : (Array.isArray(um.content) ? um.content.map((c) => (c && c.text) || "").join(" ") : "")) : "";
       // Квота: не более 2% контекста хода (и не больше maxChars)
-      const totalChars = decision.messages.reduce((n, x) => n + JSON.stringify(x).length, 0);
-      const capChars = Math.min(maxChars, Math.max(300, Math.floor(totalChars * 0.02)));
+      const pool = (decision.messages && decision.messages.length ? decision.messages : stepMessages) || [];
+      const totalChars = pool.reduce((n, x) => n + JSON.stringify(x).length, 0);
+      const capChars = totalChars > 2000 ? Math.min(maxChars, Math.floor(totalChars * 0.02)) : maxChars;
       const sel = selectInjection(store, { query: utext, shown: prev, maxItems, capChars });
       let body = sel.text;
       let injectedIds = sel.ids;

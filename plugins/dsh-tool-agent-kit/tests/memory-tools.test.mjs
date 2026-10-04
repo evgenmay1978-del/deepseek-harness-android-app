@@ -97,6 +97,48 @@ test("архив не вытесняет свежие заметки", async () 
   mi.stop();
 });
 
+test("контракт хука: на шаге 1 ввод из payload.messages даёт инъекцию", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { installMemoryInjection } = await import("../lib/memory.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "hook-")), "notes.json"));
+  store.add({ text: "роутер s4owner клиент" });
+  let handler = null;
+  const ctx = { on: (ev, fn) => { if (ev === "agent/pre-step") handler = fn; }, logger: { warn() {} } };
+  const llm = { createUserMessage: (m) => m, boundContextSummary: (k) => k };
+  installMemoryInjection(ctx, store, {}, { llm });
+  assert.ok(handler, "хук agent/pre-step зарегистрирован");
+  const session = { id: "s1" };
+  const payload = { agent: { session }, step: 1, signal: { aborted: false }, messages: [{ role: "user", content: "что по роутеру s4owner?" }] };
+  const decision = { kind: "enter", messages: [] };
+  const out = await handler(payload, async () => decision);
+  assert.equal(out.messages.length, 1, "хук добавил сообщение памяти");
+  assert.ok(JSON.stringify(out.messages[0]).includes("роутер"), "в сообщении есть заметка");
+});
+
+test("контракт хука: середина хода молчит, после компакции показывает заново", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { installMemoryInjection } = await import("../lib/memory.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "hook2-")), "notes.json"));
+  store.add({ text: "роутер s4owner клиент" });
+  let pre = null, onEvent = null;
+  const ctx = { on: (ev, fn) => { if (ev === "agent/pre-step") pre = fn; else if (ev === "session/event") onEvent = fn; }, logger: { warn() {} } };
+  const llm = { createUserMessage: (m) => m, boundContextSummary: (k) => k };
+  installMemoryInjection(ctx, store, {}, { llm });
+  const session = { id: "s2" };
+  const mk = (step) => ({ agent: { session }, step, signal: { aborted: false }, messages: [{ role: "user", content: "роутер" }] });
+  const next = async () => ({ kind: "enter", messages: [] });
+  assert.equal((await pre(mk(1), next)).messages.length, 1, "шаг 1 инжектит");
+  assert.equal((await pre(mk(2), next)).messages.length, 0, "середина хода не дублирует");
+  onEvent(session, { type: "compaction/end" });
+  assert.equal((await pre(mk(2), next)).messages.length, 1, "после компакции показываем заново");
+});
+
 test("дельта-инъекция: разные запросы дают разные наборы, показанное не повторяется", async () => {
   const { MemoryStore } = await import("../lib/store.js");
   const { selectInjection } = await import("../lib/memory.js");
@@ -108,10 +150,11 @@ test("дельта-инъекция: разные запросы дают раз
   store.add({ text: "polza ключ api провайдер" });
   store.add({ text: "закреплённая важная заметка", pinned: true });
   const a = selectInjection(store, { query: "роутер", capChars: 4000 });
-  assert.ok(a.ids.has("m1"), "по запросу про роутер пришла m1");
+  const has = (set, id) => [...set].some((k) => k.startsWith(id + ":"));
+  assert.ok(has(a.ids, "m1"), "по запросу про роутер пришла m1");
   const b = selectInjection(store, { query: "polza", shown: new Set([...a.ids]), capChars: 4000 });
-  assert.ok(b.ids.has("m2"), "по запросу про polza пришла m2");
-  assert.ok(!b.ids.has("m1"), "уже показанная m1 не повторяется");
+  assert.ok(has(b.ids, "m2"), "по запросу про polza пришла m2");
+  assert.ok(!has(b.ids, "m1"), "уже показанная m1 не повторяется");
 });
 
 test("IDF-ранжирование: редкий термин выше общего", async () => {
