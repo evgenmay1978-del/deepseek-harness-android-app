@@ -92,13 +92,36 @@ export function memoryTool(defineTool, store) {
   });
 }
 
+/**
+ * Выбор заметок для показа: закреплённые + совпадения с запросом, МИНУС уже показанные.
+ * Дельта по набору id, а не по версии памяти: иначе на следующем ходу с другим запросом
+ * релевантные заметки не придут (баг «один показ на версию»).
+ */
+export function selectInjection(store, { query = "", shown = new Set(), maxItems = 15, capChars = 1800 } = {}) {
+  const pinned = store.list(50).filter((i) => i.pinned);
+  const hits = String(query).trim() ? store.search(String(query), 5) : [];
+  const merged = [...new Map([...pinned, ...hits].map((i) => [i.id, i])).values()];
+  const fresh = merged.filter((i) => !shown.has(i.id));
+  const lines = [];
+  const ids = new Set();
+  let chars = 0;
+  for (const it of fresh.slice(0, maxItems)) {
+    const l = formatItem(it);
+    if (chars + l.length > capChars) break;
+    lines.push(l);
+    chars += l.length + 1;
+    ids.add(it.id);
+  }
+  return { text: lines.join("\n"), ids };
+}
+
 /** Показ заметок в начале хода. Ошибки не роняют ход. */
 export function installMemoryInjection(ctx, store, opts = {}, deps = {}) {
   const log = (m) => (ctx.logger?.warn ? ctx.logger.warn(m) : console.warn(m));
   const maxItems = opts.maxItems ?? 15;
   const maxChars = opts.maxChars ?? 1800;
   const getLlm = makeLlmGetter(ctx, deps);
-  const shown = new WeakMap(); // session -> version, показанная последней
+  const shown = new WeakMap(); // session -> Set<id> уже показанных заметок
   // Компакция выбрасывает показанный блок [memory] из истории, а кэш «уже показывали» остаётся —
   // заметки исчезали бы до следующего изменения памяти (это и есть потеря памяти на длинных задачах).
   // Поэтому после compaction/end помечаем сессию и показываем заметки заново на ближайшем шаге.
@@ -121,42 +144,28 @@ export function installMemoryInjection(ctx, store, opts = {}, deps = {}) {
       const refresh = stale.has(session); // после компакции показываем даже в середине хода
       if (!refresh && (step !== 1 || decision.messages.length === 0)) return decision; // иначе только начало хода с вводом
       const v = store.version();
-      if (!refresh && shown.get(session) === v) return decision;
+      const prev = refresh ? new Set() : (shown.get(session) || new Set());
       const um = decision.messages.find((x) => x && x.role === "user");
       const utext = um ? (typeof um.content === "string" ? um.content : (Array.isArray(um.content) ? um.content.map((c) => (c && c.text) || "").join(" ") : "")) : "";
       // Квота: не более 2% контекста хода (и не больше maxChars)
       const totalChars = decision.messages.reduce((n, x) => n + JSON.stringify(x).length, 0);
       const capChars = Math.min(maxChars, Math.max(300, Math.floor(totalChars * 0.02)));
-      let body = "";
-      let injectedIds = [];
-      if (utext.trim()) {
-        const hits = store.search(utext, 5);
-        const pinned = store.list(50).filter((i) => i.pinned);
-        const merged = [...new Map([...pinned, ...hits].map((i) => [i.id, i])).values()].slice(0, maxItems);
-        const lines = [];
-        let chars = 0;
-        for (const it of merged) {
-          const l = formatItem(it);
-          if (chars + l.length > capChars) break;
-          lines.push(l);
-          chars += l.length + 1;
-          injectedIds.push(it.id);
-        }
-        body = lines.join("\n");
-      }
-      if (!body) { body = store.render(maxItems, capChars); injectedIds = []; }
+      const sel = selectInjection(store, { query: utext, shown: prev, maxItems, capChars });
+      let body = sel.text;
+      let injectedIds = sel.ids;
+      if (!body) { body = store.render(maxItems, capChars); injectedIds = new Set(); }
       // Инъекция — это вещание, а не использование: used НЕ трогаем (иначе петля самоподтверждения).
-      if (body) log("[agent-kit] memory injected: " + (injectedIds.length ? injectedIds.join(",") : "fallback-dump") + " (cap " + capChars + ")");
+      if (body) log("[agent-kit] memory injected: " + (injectedIds.size ? [...injectedIds].join(",") : "fallback-dump") + " (cap " + capChars + ")");
       stale.delete(session);
-      if (!body) { shown.set(session, v); return decision; }
+      if (!body) { shown.set(session, new Set(prev)); return decision; }
       const llm = await getLlm();
       if (!llm) {
         if (!failLogged) { failLogged = true; log("[agent-kit] dsh-llm недоступен: заметки памяти не показываются модели (agent_memory работает)"); }
         return decision;
       }
-      shown.set(session, v);
+      shown.set(session, new Set([...prev, ...injectedIds]));
       stale.delete(session);
-      return { ...decision, messages: [...decision.messages, noticeMessage(llm, "agent-kit-memory", HEADER + body, "memory-v" + v)] };
+      return { ...decision, messages: [...decision.messages, noticeMessage(llm, "agent-kit-memory", HEADER + body, "memory-delta-" + v + "-" + [...injectedIds].join("_"))] };
     } catch (e) {
       log("[agent-kit] memory pre-step: " + (e && e.message || e));
     }

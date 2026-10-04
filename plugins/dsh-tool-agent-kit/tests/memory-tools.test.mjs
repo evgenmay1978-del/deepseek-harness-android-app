@@ -97,6 +97,23 @@ test("архив не вытесняет свежие заметки", async () 
   mi.stop();
 });
 
+test("дельта-инъекция: разные запросы дают разные наборы, показанное не повторяется", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { selectInjection } = await import("../lib/memory.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "delta-")), "notes.json"));
+  store.add({ text: "роутер s4owner клиент" });
+  store.add({ text: "polza ключ api провайдер" });
+  store.add({ text: "закреплённая важная заметка", pinned: true });
+  const a = selectInjection(store, { query: "роутер", capChars: 4000 });
+  assert.ok(a.ids.has("m1"), "по запросу про роутер пришла m1");
+  const b = selectInjection(store, { query: "polza", shown: new Set([...a.ids]), capChars: 4000 });
+  assert.ok(b.ids.has("m2"), "по запросу про polza пришла m2");
+  assert.ok(!b.ids.has("m1"), "уже показанная m1 не повторяется");
+});
+
 test("IDF-ранжирование: редкий термин выше общего", async () => {
   const { MemoryStore } = await import("../lib/store.js");
   const { mkdtempSync } = await import("node:fs");
