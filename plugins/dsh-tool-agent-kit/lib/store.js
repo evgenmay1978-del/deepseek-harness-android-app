@@ -163,6 +163,30 @@ export class MemoryStore {
     return scored.slice(0, Math.max(1, limit)).map((x) => x.it);
   }
 
+  /**
+   * Топ-термины запроса по IDF по корпусу заметок. Длинная реплика (вставка отчёта) не должна
+   * перевешивать суть вопроса: редкие термины корпуса весят больше. Термины вне корпуса
+   * отбрасываются — они всё равно ничего не найдут.
+   */
+  keyTerms(text, limit = 15) {
+    const q = tokens(text);
+    if (q.length === 0) return [];
+    const items = this.#load().items;
+    const N = items.length || 1;
+    const docs = items.map((it) => norm(it.text + " " + it.tags));
+    const seen = new Set();
+    const scored = [];
+    for (const t of q) {
+      if (seen.has(t)) continue;
+      seen.add(t);
+      const df = docs.reduce((n, d) => n + (d.includes(t) ? 1 : 0), 0);
+      if (df === 0) continue; // терм вне корпуса не найдёт ничего
+      scored.push({ t, idf: Math.log((N + 1) / (df + 1)) + 1 });
+    }
+    scored.sort((a, b) => b.idf - a.idf);
+    return scored.slice(0, Math.max(1, limit)).map((x) => x.t);
+  }
+
   render(maxItems = 15, maxChars = 1800) {
     const lines = [];
     let chars = 0;

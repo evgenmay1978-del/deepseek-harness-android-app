@@ -145,7 +145,9 @@ test("реальная фикстура журнала: несовпавший �
   const payload = { agent: { session: { id: "real" } }, turn: 34, step: 1, signal: { aborted: false }, messages: [REAL_TURN34] };
   const out = await handler(payload, async () => ({ kind: "enter", messages: [] }));
   assert.equal(out.messages.length, 0, "несовпавший запрос больше не дампит всю память");
-  assert.equal(readInjectionLog(join(dirname(store.file), "injection-log.json")).length, 0, "и не пишет состояние");
+  const skip = readInjectionLog(join(dirname(store.file), "injection-log.json"));
+  assert.equal(skip.length, 1, "пропуск записан — иначе не отличить от «хук не сработал»");
+  assert.equal(skip[0].skipped, "no_match", "причина: заметки есть, но запрос не совпал");
 });
 
 test("несовпавший запрос показывает ТОЛЬКО закреплённые + версию схемы", async () => {
@@ -170,28 +172,59 @@ test("несовпавший запрос показывает ТОЛЬКО за
   const st = readInjectionLog(join(dirname(store.file), "injection-log.json"));
   assert.equal(st[0].via, "fallback", "запрос был, совпадений нет — fallback");
   assert.equal(st[0].v, 1, "версия схемы файла записана");
-  assert.equal(st[0].qlen, "Перезагрузил".length, "qlen показывает, что запрос НЕ пустой");
+  assert.equal(st[0].qlen, "Перезагрузил".length, "qlen — длина исходного запроса");
+  assert.ok(st[0].pinned >= 1 && st[0].total >= 2, "счётчики: закреплено " + st[0].pinned + ", всего " + st[0].total);
 });
 
-test("длинная старая реплика не перетягивает запрос: свежие важнее, ≤500 символов", async () => {
+test("IDF-запрос: редкий терм в длинной реплике находит нужную заметку", async () => {
   const { MemoryStore } = await import("../lib/store.js");
   const { installMemoryInjection, readInjectionLog } = await import("../lib/memory.js");
   const { mkdtempSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join, dirname } = await import("node:path");
-  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "cap-")), "notes.json"));
-  store.add({ text: "роутер s4owner клиент" });
-  let pre = null, onEvent = null;
-  const ctx = { on: (ev, fn) => { if (ev === "agent/pre-step") pre = fn; else if (ev === "session/event") onEvent = fn; }, logger: { warn() {} } };
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "idfq-")), "notes.json"));
+  for (let i = 0; i < 30; i++) store.add({ text: "обычная заметка про роутер номер " + i });
+  store.add({ text: "уникальный факт zzraretoken про сборку" });
+  const terms = store.keyTerms("шум ".repeat(800) + " zzraretoken", 15);
+  assert.ok(terms.some((t) => "zzraretoken".startsWith(t)), "редкий терм в запросе: " + terms.slice(0, 5).join(","));
+  let handler = null;
+  const ctx = { on: (ev, fn) => { if (ev === "agent/pre-step") handler = fn; }, logger: { warn() {} } };
   installMemoryInjection(ctx, store, {}, { llm: { createUserMessage: (m) => m, boundContextSummary: (k) => k } });
-  const session = { id: "cap" };
-  onEvent(session, { type: "user/message", data: { source: { kind: "user" }, content: [{ type: "text", text: "повтор ".repeat(130) }] } });
-  const payload = { agent: { session }, step: 1, signal: { aborted: false }, messages: [{ role: "user", content: [{ type: "text", text: "что по роутеру s4owner?" }] }] };
-  const out = await pre(payload, async () => ({ kind: "enter", messages: [] }));
-  assert.equal(out.messages.length, 1, "свежая реплика про роутер найдена");
+  const long = "повтор отчёта ".repeat(400) + " zzraretoken"; // ~5600 символов
+  const payload = { agent: { session: { id: "idfq" } }, turn: 1, step: 1, signal: { aborted: false }, messages: [{ role: "user", content: [{ type: "text", text: long }] }] };
+  const out = await handler(payload, async () => ({ kind: "enter", messages: [] }));
+  assert.ok(JSON.stringify(out.messages[0]).includes("zzraretoken"), "заметка с редким термом найдена");
   const st = readInjectionLog(join(dirname(store.file), "injection-log.json"));
-  assert.ok(st[0].qlen <= 500, "запрос ограничен 500 символами, получено " + st[0].qlen);
   assert.equal(st[0].via, "query");
+  assert.ok(st[0].terms >= 1 && st[0].terms <= 15, "термов в запросе: " + st[0].terms);
+  assert.ok(st[0].qlen > 500, "исходная реплика длинная, но запрос больше не режется: " + st[0].qlen);
+});
+
+test("пропуск с причиной: no_delta на повторе и not_step1 в середине хода", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { installMemoryInjection, readInjectionLog } = await import("../lib/memory.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join, dirname } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "skip-")), "notes.json"));
+  store.add({ text: "роутер s4owner клиент" });
+  let handler = null;
+  const ctx = { on: (ev, fn) => { if (ev === "agent/pre-step") handler = fn; }, logger: { warn() {} } };
+  installMemoryInjection(ctx, store, {}, { llm: { createUserMessage: (m) => m, boundContextSummary: (k) => k } });
+  const session = { id: "skip" };
+  const mk = (step, turn) => ({ agent: { session }, turn, step, signal: { aborted: false }, messages: [{ role: "user", content: [{ type: "text", text: "что по роутеру s4owner?" }] }] });
+  const next = async () => ({ kind: "enter", messages: [] });
+  const path = join(dirname(store.file), "injection-log.json");
+  await handler(mk(1, 1), next); // инъекция
+  await handler(mk(1, 2), next); // тот же набор → дельта пуста
+  let st = readInjectionLog(path);
+  assert.equal(st[st.length - 1].skipped, "no_delta", "повторный набор: no_delta");
+  await handler(mk(2, 2), next);
+  st = readInjectionLog(path);
+  assert.equal(st[st.length - 1].skipped, "not_step1", "середина хода: not_step1");
+  const before = st.length;
+  await handler(mk(3, 2), next);
+  assert.equal(readInjectionLog(path).length, before, "not_step1 пишется один раз на ход");
 });
 
 test("длинная реплика не съедает инъекцию: кап — от окна, не от хода", async () => {
@@ -285,6 +318,30 @@ test("agent_memory(status) читает журнал инъекций на мо�
   res = await tool.execute({ action: "status" });
   assert.ok(res.text.includes("последняя инъекция: 2026-10-04T18:23:15.725Z"), "видно время последней инъекции");
   assert.ok(res.text.includes("via fallback") && res.text.includes("запрос 12 симв"), "видно via и длину запроса");
+});
+
+test("status показывает счётчики выбора: закреплено/совпало/кандидатов/всего и термы", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { memoryTool, installMemoryInjection } = await import("../lib/memory.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "cnt-")), "notes.json"));
+  store.add({ text: "роутер s4owner клиент" });
+  store.add({ text: "роутер другой узел", pinned: true });
+  store.add({ text: "посторонняя заметка" });
+  let handler = null;
+  const ctx = { on: (ev, fn) => { if (ev === "agent/pre-step") handler = fn; }, logger: { warn() {} } };
+  installMemoryInjection(ctx, store, {}, { llm: { createUserMessage: (m) => m, boundContextSummary: (k) => k } });
+  const payload = { agent: { session: { id: "cnt" } }, turn: 1, step: 1, signal: { aborted: false }, messages: [{ role: "user", content: [{ type: "text", text: "что по роутеру?" }] }] };
+  const out = await handler(payload, async () => ({ kind: "enter", messages: [] }));
+  assert.equal(out.messages.length, 1, "инъекция прошла");
+  const tool = memoryTool((x) => x, store);
+  const res = await tool.execute({ action: "status" });
+  assert.ok(res.text.includes("закреплено"), "видно число закреплённых");
+  assert.ok(res.text.includes("совпало"), "видно число совпавших");
+  assert.ok(res.text.includes("всего"), "видно размер корпуса");
+  assert.ok(res.text.includes("терм."), "видно число термов запроса");
 });
 
 test("контракт хука: середина хода молчит, после компакции показывает заново", async () => {
