@@ -14,3 +14,5 @@ android-app/assets/
 payload.zip
 *.bak
 *.bak-*
+# локальные lint-зависимости плагина (ставятся npm ci, в бандл не уезжают)
+node_modules/

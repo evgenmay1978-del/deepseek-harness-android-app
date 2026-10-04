@@ -166,10 +166,32 @@ test("несовпавший запрос показывает ТОЛЬКО за
   const txt = JSON.stringify(out.messages[0]);
   assert.ok(txt.includes("закреплённый факт"), "закреплённая показана");
   assert.ok(!txt.includes("обычная заметка"), "незакреплённая не дампится");
+  assert.ok(txt.includes("memory_search"), "подсказка о поиске: модель знает, что есть ещё");
   const st = readInjectionLog(join(dirname(store.file), "injection-log.json"));
   assert.equal(st[0].via, "fallback", "запрос был, совпадений нет — fallback");
   assert.equal(st[0].v, 1, "версия схемы файла записана");
   assert.equal(st[0].qlen, "Перезагрузил".length, "qlen показывает, что запрос НЕ пустой");
+});
+
+test("длинная старая реплика не перетягивает запрос: свежие важнее, ≤500 символов", async () => {
+  const { MemoryStore } = await import("../lib/store.js");
+  const { installMemoryInjection, readInjectionLog } = await import("../lib/memory.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join, dirname } = await import("node:path");
+  const store = new MemoryStore(join(mkdtempSync(join(tmpdir(), "cap-")), "notes.json"));
+  store.add({ text: "роутер s4owner клиент" });
+  let pre = null, onEvent = null;
+  const ctx = { on: (ev, fn) => { if (ev === "agent/pre-step") pre = fn; else if (ev === "session/event") onEvent = fn; }, logger: { warn() {} } };
+  installMemoryInjection(ctx, store, {}, { llm: { createUserMessage: (m) => m, boundContextSummary: (k) => k } });
+  const session = { id: "cap" };
+  onEvent(session, { type: "user/message", data: { source: { kind: "user" }, content: [{ type: "text", text: "повтор ".repeat(130) }] } });
+  const payload = { agent: { session }, step: 1, signal: { aborted: false }, messages: [{ role: "user", content: [{ type: "text", text: "что по роутеру s4owner?" }] }] };
+  const out = await pre(payload, async () => ({ kind: "enter", messages: [] }));
+  assert.equal(out.messages.length, 1, "свежая реплика про роутер найдена");
+  const st = readInjectionLog(join(dirname(store.file), "injection-log.json"));
+  assert.ok(st[0].qlen <= 500, "запрос ограничен 500 символами, получено " + st[0].qlen);
+  assert.equal(st[0].via, "query");
 });
 
 test("короткая реплика после содержательного запроса берёт тему из истории реплик", async () => {

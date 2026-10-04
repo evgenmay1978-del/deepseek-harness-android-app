@@ -142,3 +142,18 @@ test("пустое чтение журнала не считается «зад�
   const q = JSON.parse(mem.get("/app/agent-memory/schedule-queue.json"));
   assert.equal(Object.keys(q.tasks).length, 1, "задача не потеряна из-за обрезки файла");
 });
+
+test("armNearest форматирует «when» (путь fmt — раньше стоял ниже объявления)", async () => {
+  // Будущая задача остаётся pending → nearest вернёт её, и when пойдёт через fmt (а не NEUTRAL_WHEN).
+  const fs = mkFs({ "/app/scheduled-tasks.json": "task-1|9999999999999|once|0|напоминание\n" });
+  let posted = null;
+  const ctx = { logger: { warn() {} }, get: () => undefined };
+  const h = installScheduleRunner(ctx, { execute: false, intervalMs: 3600e3, startupDelayMs: 3600e3 }, {
+    filesDir: "/app", now: () => 2000, readFile: fs.readFile, writeFile: fs.writeFile,
+    appPost: async (_p, body) => { posted = body; return { ok: true }; }, notify: async () => {},
+  });
+  await h.tick();
+  clearInterval(h.interval); clearTimeout(h.timer);
+  assert.ok(posted, "слот взведён через armNearest");
+  assert.match(String(posted.when), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/, "when в формате fmt: " + posted.when);
+});

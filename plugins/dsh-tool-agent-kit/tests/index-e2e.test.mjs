@@ -13,6 +13,7 @@ test("e2e: реальный index.js собирается и пишет полн
   const here = dirname(fileURLToPath(import.meta.url));
   const r = spawnSync(process.execPath, ["--experimental-vm-modules", join(here, "support", "load-index.mjs")], { encoding: "utf8", timeout: 30000 });
   assert.equal(r.status, 0, "загрузчик упал: " + ((r.stderr || r.stdout || "").slice(-600)));
+  assert.match(r.stdout, /KERNEL (none|\d)/, "контракт с ядром напечатан");
   assert.match(r.stdout, /E2E_LINE .*инструменты/);
   assert.match(r.stdout, /скиллов на диске/);
   assert.match(r.stdout, /память/);

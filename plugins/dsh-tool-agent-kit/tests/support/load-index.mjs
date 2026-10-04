@@ -12,10 +12,18 @@ import vm from "node:vm";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { detectFilesDir } from "../../lib/paths.js";
+
+// Флаг обязателен: без него vm.SourceTextModule===undefined и загрузчик молча «не запустится».
+if (typeof vm.SourceTextModule !== "function") {
+  console.error("load-index: нужен флаг --experimental-vm-modules (vm.SourceTextModule отсутствует)");
+  process.exit(2);
+}
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN = path.resolve(HERE, "..", "..");
+const REAL_FILES = detectFilesDir(); // ДО подмены DSH_FILES_DIR — иначе потеряем путь к ядру
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "idx-e2e-"));
 
 process.env.DSH_FILES_DIR = TMP;
@@ -23,6 +31,26 @@ process.env.DSH_GUARD = "off";
 process.env.DSH_SCHEDULE = "off";
 process.env.DSH_VSCREEN_TOOLS = "off";
 process.env.DSH_SELFCHECK_DELAY_MS = "50";
+
+// Контракт с ядром: заглушка dsh-tools должна покрывать то, что плагин реально импортирует.
+// Если апстрим переименует defineTool, заглушка молча «разойдётся» с ядром — здесь это падение.
+const REQUIRED_DSH_TOOLS = ["defineTool"];
+let kernelLine = "KERNEL none";
+try {
+  const dshRoot = path.join(REAL_FILES, "payload/dshroot/lib/node_modules/@deepseek-ai/dsh");
+  const dshTools = path.join(dshRoot, "node_modules/@deepseek-ai/dsh-tools/lib/index.js");
+  if (fs.existsSync(dshTools)) {
+    const ver = JSON.parse(fs.readFileSync(path.join(dshRoot, "package.json"), "utf8")).version;
+    const mod = await import(pathToFileURL(dshTools).href);
+    const missing = REQUIRED_DSH_TOOLS.filter((n) => !(n in mod));
+    if (missing.length) { console.error("КОНТРАКТ С ЯДРОМ: dsh-tools не экспортирует " + missing.join(", ")); process.exit(3); }
+    kernelLine = "KERNEL " + ver + " dsh-tools:" + Object.keys(mod).length + " defineTool:ok";
+  }
+} catch (e) {
+  console.error("КОНТРАКТ С ЯДРОМ: не удалось проверить (" + ((e && e.message) || e) + ")");
+  process.exit(3);
+}
+console.log(kernelLine);
 
 // Журнал с записью: строка должна показать ветку инъекции, а не «инъекций не было».
 fs.mkdirSync(path.join(TMP, "agent-memory"), { recursive: true });
